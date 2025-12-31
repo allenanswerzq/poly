@@ -1,0 +1,44 @@
+# Foundry build artifacts
+blockchain-lab/out/
+blockchain-lab/cache/
+blockchain-lab/lib/
+
+# Dependencies
+node_modules/
+lib/
+
+# Build outputs
+out/
+cache/
+artifacts/
+typechain/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+coverage.json
+lcov.info
+
+# Misc
+*.lock
+!foundry.lock
+broadcast/
