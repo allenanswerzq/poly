@@ -210,3 +210,152 @@ contract BadV2 {
  *    - Storage collision bugs
  *    - Initialization front-running
  */
+
+// ============================================
+// DEMO / TEST CONTRACT
+// Run: forge test --match-contract UpgradeableDemo -vvvv
+// ============================================
+contract UpgradeableDemo {
+    SimpleProxy public proxy;
+    CounterV1 public implV1;
+    CounterV2 public implV2;
+
+    // Events for logging
+    event Log(string message, uint256 value);
+    event LogAddress(string message, address value);
+
+    function runAllTests() external {
+        testDeployAndIncrement();
+        testUpgradeToV2();
+        testV2Features();
+        testStoragePersistence();
+    }
+
+    // Test 1: Deploy proxy with V1 and increment
+    function testDeployAndIncrement() public {
+        // Deploy implementation V1
+        implV1 = new CounterV1();
+        emit LogAddress("Deployed CounterV1 at", address(implV1));
+
+        // Deploy proxy pointing to V1
+        proxy = new SimpleProxy(address(implV1));
+        emit LogAddress("Deployed Proxy at", address(proxy));
+
+        // Cast proxy as CounterV1 to call its functions
+        CounterV1 counter = CounterV1(address(proxy));
+
+        // Check initial state
+        require(counter.getCount() == 0, "Should start at 0");
+        emit Log("Initial count", counter.getCount());
+
+        // Increment
+        counter.increment();
+        require(counter.getCount() == 1, "Should be 1");
+        emit Log("After increment", counter.getCount());
+
+        // Increment again
+        counter.increment();
+        require(counter.getCount() == 2, "Should be 2");
+        emit Log("After 2nd increment", counter.getCount());
+
+        // Check version
+        require(
+            keccak256(bytes(counter.version())) == keccak256(bytes("v1")),
+            "Should be v1"
+        );
+        emit Log("Test 1 PASSED: Deploy and increment", 1);
+    }
+
+    // Test 2: Upgrade to V2
+    function testUpgradeToV2() public {
+        // Deploy V2 implementation
+        implV2 = new CounterV2();
+        emit LogAddress("Deployed CounterV2 at", address(implV2));
+
+        // Upgrade proxy to V2
+        proxy.upgradeTo(address(implV2));
+        emit LogAddress("Upgraded proxy to", address(implV2));
+
+        // Cast as V2
+        CounterV2 counter = CounterV2(address(proxy));
+
+        // Check version changed
+        require(
+            keccak256(bytes(counter.version())) == keccak256(bytes("v2")),
+            "Should be v2"
+        );
+        emit Log("Test 2 PASSED: Upgrade to V2", 1);
+    }
+
+    // Test 3: V2 new features work
+    function testV2Features() public {
+        CounterV2 counter = CounterV2(address(proxy));
+
+        // Get current count (should persist from V1)
+        uint256 currentCount = counter.getCount();
+        emit Log("Count after upgrade", currentCount);
+
+        // Test new V2 feature: setIncrementAmount
+        counter.setIncrementAmount(5);
+        counter.increment();
+        require(counter.getCount() == currentCount + 5, "Should add 5");
+        emit Log("After increment by 5", counter.getCount());
+
+        // Test new V2 feature: decrement
+        counter.decrement();
+        require(counter.getCount() == currentCount + 4, "Should subtract 1");
+        emit Log("After decrement", counter.getCount());
+
+        emit Log("Test 3 PASSED: V2 features work", 1);
+    }
+
+    // Test 4: Storage persists across upgrades
+    function testStoragePersistence() public {
+        CounterV2 counter = CounterV2(address(proxy));
+
+        // Set a specific count
+        counter.setIncrementAmount(100);
+        counter.increment();
+        uint256 countBefore = counter.getCount();
+        emit Log("Count before re-upgrade", countBefore);
+
+        // "Upgrade" back to same V2 (simulates upgrade)
+        proxy.upgradeTo(address(implV2));
+
+        // Count should still be there!
+        require(counter.getCount() == countBefore, "Storage should persist");
+        emit Log("Count after re-upgrade", counter.getCount());
+
+        emit Log("Test 4 PASSED: Storage persists", 1);
+    }
+
+    // Demonstrate the delegatecall magic
+    function explainDelegatecall() external view returns (string memory) {
+        return string(abi.encodePacked(
+            "When you call proxy.increment():\n",
+            "1. Proxy receives the call\n",
+            "2. fallback() catches it (no increment function in proxy)\n",
+            "3. delegatecall forwards to implementation\n",
+            "4. Implementation code runs\n",
+            "5. But storage writes go to PROXY, not implementation!\n",
+            "6. Result: upgradeable logic, persistent storage"
+        ));
+    }
+}
+
+// ============================================
+// HOW TO RUN THIS DEMO
+// ============================================
+//
+// Option 1: In Foundry test
+//   forge test --match-contract UpgradeableDemo -vvvv
+//
+// Option 2: Deploy and call manually
+//   UpgradeableDemo demo = new UpgradeableDemo();
+//   demo.runAllTests();
+//
+// Option 3: In Remix
+//   Deploy UpgradeableDemo
+//   Click runAllTests()
+//   Check the event logs
+// ============================================

