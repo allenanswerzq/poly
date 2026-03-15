@@ -1,0 +1,43 @@
+[package]
+name = "mini-eth"
+version = "0.1.0"
+edition = "2021"
+description = "A fully functional mini Ethereum implementation"
+authors = ["Yibai"]
+
+[[bin]]
+name = "mini-eth"
+path = "src/main.rs"
+
+[[bin]]
+name = "eth-client"
+path = "src/bin/client.rs"
+
+[[bin]]
+name = "eth-demo"
+path = "src/bin/demo.rs"
+
+[dependencies]
+# Internal crates from workspace
+eth_primitives = { path = "../rust-eth-primitives" }
+mini_evm = { path = "../mini-evm" }
+mpt_trie = { path = "../mpt-trie" }
+devp2p = { path = "../devp2p" }
+block_builder = { path = "../block-builder" }
+
+# External dependencies
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hex = "0.4"
+rand = "0.8"
+parking_lot = "0.12"
+dashmap = "5.5"
+async-trait = "0.1"
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
