@@ -1,0 +1,13 @@
+[package]
+name = "mini-zookeeper"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mini-zookeeper"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }

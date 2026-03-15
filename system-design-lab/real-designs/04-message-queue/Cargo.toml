@@ -1,0 +1,17 @@
+[package]
+name = "message-queue"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "message-queue"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }

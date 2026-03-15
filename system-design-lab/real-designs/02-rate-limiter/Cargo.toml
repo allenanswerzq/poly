@@ -1,0 +1,13 @@
+[package]
+name = "rate-limiter"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rate-limiter"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }

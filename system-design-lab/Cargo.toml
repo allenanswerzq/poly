@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "core-concepts/01-networking",
+    "core-concepts/04-caching",
+    "core-concepts/06-consistent-hashing",
+    "core-concepts/08-database-indexing",
+    "real-designs/01-url-shortener",
+    "real-designs/02-rate-limiter",
+    "real-designs/03-distributed-cache",
+    "real-designs/04-message-queue",
+    "real-designs/06-key-value-store",
+    "real-designs/07-load-balancer",
+    "key-technologies/redis",
+    "key-technologies/zookeeper",
+]
+
+[workspace.dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+bytes = "1.5"
+dashmap = "5.5"
+parking_lot = "0.12"
+rand = "0.8"
+sha2 = "0.10"
+md5 = "0.7"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.6", features = ["v4"] }
+async-trait = "0.1"
+futures = "0.3"

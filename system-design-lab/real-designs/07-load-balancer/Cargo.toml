@@ -1,0 +1,14 @@
+[package]
+name = "load-balancer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "load-balancer"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+dashmap = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "key-value-store"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "key-value-store"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
