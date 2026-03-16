@@ -1,0 +1,15 @@
+[package]
+name = "real-time-updates"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "real-time-updates"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+futures = { workspace = true }

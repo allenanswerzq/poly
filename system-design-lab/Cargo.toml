@@ -13,6 +13,10 @@ members = [
     "real-designs/07-load-balancer",
     "key-technologies/redis",
     "key-technologies/zookeeper",
+    "patterns/scaling-reads",
+    "patterns/scaling-writes",
+    "patterns/real-time-updates",
+    "patterns/handling-contention",
 ]
 
 [workspace.dependencies]

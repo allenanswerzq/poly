@@ -1,0 +1,14 @@
+[package]
+name = "scaling-reads"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "scaling-reads"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
