@@ -301,6 +301,56 @@ fn demo_http11_hol_blocking(base_url: &str) {
     println!("  ^ /health didn't wait! But we needed 2 TCP connections to do it.");
     println!("  This is the browser workaround: 6 connections × sequential = ~6 parallel.\n");
 
+    // ── HTTP/1.1 with ONE client, async pool (like a real browser) ───────
+    // reqwest's async Client automatically opens multiple TCP connections
+    // from its pool when existing ones are busy — just like a browser!
+    println!("  HTTP/1.1 — ONE async client, pool auto-opens 6 connections:");
+    println!("  reqwest::Client with .http1_only() + .pool_max_idle_per_host(6)");
+    println!("  tokio::join! fires 6 requests — pool opens 6 TCP connections.\n");
+
+    let base_url_owned = base_url.to_string();
+    let start = Instant::now();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let browser_results = rt.block_on(async {
+        let browser_client = reqwest::ClientBuilder::new()
+            .http1_only()
+            .pool_max_idle_per_host(6)
+            .build()
+            .unwrap();
+
+        // Fire 6 requests concurrently — pool opens 6 TCP connections automatically
+        let paths = ["/slow", "/health", "/api/users", "/slow", "/", "/health"];
+        let mut handles = Vec::new();
+        for (i, path) in paths.iter().enumerate() {
+            let client = browser_client.clone();
+            let url = format!("{}{}", base_url_owned, path);
+            let path = path.to_string();
+            handles.push(tokio::spawn(async move {
+                let start = Instant::now();
+                let resp = client.get(&url).send().await.unwrap();
+                (i + 1, path, resp.status(), resp.version(), start.elapsed())
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap());
+        }
+        results.sort_by_key(|r| r.0);
+        results
+    });
+
+    for (i, path, status, version, elapsed) in &browser_results {
+        println!(
+            "    req {} GET {:12} -> {} {:?} ({:?})",
+            i, path, status, version, elapsed
+        );
+    }
+    println!("  HTTP/1.1 browser-style total: {:?}", start.elapsed());
+    println!("  ^ All 6 ran in parallel! Pool auto-opened 6 TCP connections.");
+    println!("  /slow didn't block /health — they're on different connections.\n");
+
     // ── HTTP/2: multiplexed, no head-of-line blocking ────────────────────
     // .http2_prior_knowledge() tells reqwest to speak HTTP/2 directly (h2c).
     // On HTTP/2, multiple requests fly on ONE TCP connection simultaneously.
