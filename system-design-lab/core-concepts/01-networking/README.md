@@ -394,6 +394,76 @@ ONE connection:
 | **SSE** | Server → Client | Notifications | Low |
 | **WebSocket** | Bidirectional | Chat, gaming | Very low |
 
+## TLS (Transport Layer Security)
+
+TLS encrypts the connection between client and server. Without TLS, anyone on the network (WiFi, ISP, corporate proxy) can read your passwords, tokens, and data in plaintext.
+
+### What TLS Provides
+
+| Property | What It Does | How |
+|---|---|---|
+| **Encryption** | Nobody can read the traffic | AES-256-GCM or ChaCha20-Poly1305 |
+| **Authentication** | Server proves it's really google.com | X.509 certificate signed by a CA |
+| **Integrity** | Nobody can tamper with the data | HMAC on every record |
+
+### TLS Handshake (TLS 1.3)
+
+```
+Client                                  Server
+  │                                       │
+  │── ClientHello ───────────────────────►│
+  │   • Supported cipher suites            │
+  │   • TLS version (1.3)                  │
+  │   • Random nonce                       │
+  │   • SNI: "api.example.com"             │  ← which host?
+  │   • Key share (Diffie-Hellman)         │
+  │                                       │
+  │◄── ServerHello + Certificate ─────────│
+  │   • Chosen cipher suite               │
+  │   • Server's key share                │
+  │   • X.509 certificate chain           │  ← proves identity
+  │   • Finished                          │
+  │                                       │
+  │── Finished ──────────────────────────►│  (1 RTT total for TLS 1.3!)
+  │                                       │
+  │═══ Encrypted Application Data ═══════│  ← all HTTP traffic here
+```
+
+**TLS 1.3 vs 1.2**: TLS 1.3 completes in **1 RTT** (vs 2 RTT for 1.2), removed all weak ciphers, and supports **0-RTT resumption** (send data immediately on reconnection using a pre-shared key).
+
+### Key Concepts
+
+- **Certificate (X.509)**: A file containing the server's public key + domain name, signed by a CA. The client verifies this signature to confirm the server is who it claims to be.
+- **CA (Certificate Authority)**: A trusted third party that signs certificates. Your OS/browser ships with ~100 trusted root CAs (Let's Encrypt, DigiCert, etc.).
+- **Certificate Chain**: Server cert → Intermediate CA → Root CA. Client walks the chain until it finds a trusted root.
+- **SNI (Server Name Indication)**: The client sends the hostname in the ClientHello (plaintext). This lets one IP host multiple HTTPS domains. Without SNI, the server doesn't know which certificate to present.
+- **ALPN (Application-Layer Protocol Negotiation)**: During the TLS handshake, the client says "I support h2, http/1.1" and the server picks one. This is how HTTP/2 is negotiated — no extra round trips.
+- **0-RTT (TLS 1.3)**: On a resumed connection, the client can send data in the very first message using a pre-shared key from a previous session. Zero round-trip latency. Trade-off: vulnerable to replay attacks, so only safe for idempotent requests (GET, not POST).
+- **mTLS (Mutual TLS)**: Both client AND server present certificates. Used in microservice-to-microservice auth (e.g., Istio service mesh). The server verifies the client's identity too.
+
+### TLS Version Comparison
+
+| Version | Handshake | Cipher Suites | 0-RTT | Status (2026) |
+|---|---|---|---|---|
+| TLS 1.0 | 2 RTT | Weak (RC4, MD5) | No | **DEAD** — removed from all browsers |
+| TLS 1.1 | 2 RTT | Weak | No | **DEAD** — removed from all browsers |
+| TLS 1.2 | 2 RTT | Mixed (some weak) | No | **Legacy** — still works but 1.3 preferred |
+| TLS 1.3 | **1 RTT** | **Strong only** (AES-GCM, ChaCha20) | **Yes** | **Current** — used by default everywhere |
+
+### Where TLS Fits in the Stack
+
+```
+Your code:   GET /api/users
+     ↕
+HTTP layer:  HTTP/1.1 text  or  HTTP/2 binary  or  HTTP/3
+     ↕                            ↕                   ↕
+TLS layer:   TLS 1.3 encryption   TLS 1.3           Built into QUIC
+     ↕                            ↕                   ↕
+Transport:   TCP                  TCP                 UDP (QUIC)
+```
+
+HTTPS = HTTP + TLS. It's not a separate protocol — it's HTTP running inside a TLS tunnel. The same is true for WSS (WebSocket Secure) = WebSocket + TLS.
+
 ## DNS Resolution
 
 ```

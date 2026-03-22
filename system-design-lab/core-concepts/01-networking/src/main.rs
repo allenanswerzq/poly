@@ -13,7 +13,7 @@ use base64::Engine;
 use futures::StreamExt;
 use sha1::{Digest, Sha1};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -584,171 +584,185 @@ fn demo_http2_streaming(base_url: &str) {
 }
 
 // =============================================================================
-// 4. HTTP/3 / QUIC Concepts
+// 4. HTTP/3 / QUIC — Real QUIC Demo (quinn library)
 // =============================================================================
 //
-// HTTP/3 runs over QUIC (UDP-based transport):
-// - 0-RTT connection establishment (vs 1-3 RTT for TCP+TLS)
-// - No TCP head-of-line blocking (independent streams)
-// - Built-in TLS 1.3
-// - Connection migration (survives IP changes on mobile)
-//
-// We demonstrate: UDP-based messaging to show the foundation of QUIC,
-// and explain the differences from TCP conceptually.
+// HTTP/3 runs over QUIC (UDP-based transport).
+// Instead of simulating, we use the quinn library (production QUIC implementation)
+// to demonstrate:
+// - Real UDP transport (not TCP!)
+// - Built-in TLS 1.3 (mandatory — no unencrypted QUIC exists)
+// - Independent bidirectional streams (no HOL blocking)
+// - Connection ID (enables connection migration)
+// - 1-RTT handshake (vs 2-3 RTT for TCP+TLS)
 
-/// Minimal QUIC-inspired packet structure
-/// Real QUIC is much more complex (variable-length encoding, crypto, etc.)
-#[derive(Debug)]
-struct QuicLikePacket {
-    connection_id: u64,
-    packet_number: u32,
-    stream_id: u32,
-    payload: Vec<u8>,
-}
+/// Real QUIC demo using quinn: server + client over UDP with multiple streams.
+fn demo_real_quic() {
+    println!("\n  ═══ demo_real_quic ═══\n");
+    println!("  Using quinn (production QUIC library) for real QUIC over UDP.\n");
 
-impl QuicLikePacket {
-    fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&self.connection_id.to_be_bytes());
-        buf.extend_from_slice(&self.packet_number.to_be_bytes());
-        buf.extend_from_slice(&self.stream_id.to_be_bytes());
-        let len = self.payload.len() as u16;
-        buf.extend_from_slice(&len.to_be_bytes());
-        buf.extend_from_slice(&self.payload);
-        buf
-    }
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        // ── Step 1: Generate self-signed TLS cert ────────────────────────
+        // QUIC mandates TLS 1.3 — you CANNOT have unencrypted QUIC.
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert_der = rustls_pki_types::CertificateDer::from(cert.cert);
+        let key_der = rustls_pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
+        println!("  [Setup] Generated self-signed TLS 1.3 cert (QUIC mandates encryption)");
 
-    fn decode(data: &[u8]) -> Option<Self> {
-        if data.len() < 18 {
-            return None;
-        }
-        let connection_id = u64::from_be_bytes(data[0..8].try_into().ok()?);
-        let packet_number = u32::from_be_bytes(data[8..12].try_into().ok()?);
-        let stream_id = u32::from_be_bytes(data[12..16].try_into().ok()?);
-        let len = u16::from_be_bytes(data[16..18].try_into().ok()?) as usize;
-        if data.len() < 18 + len {
-            return None;
-        }
-        let payload = data[18..18 + len].to_vec();
-        Some(Self {
-            connection_id,
-            packet_number,
-            stream_id,
-            payload,
-        })
-    }
-}
+        // ── Step 2: Start QUIC server on UDP ─────────────────────────────
+        let server_crypto = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert_der.clone()],
+                rustls_pki_types::PrivateKeyDer::Pkcs8(key_der),
+            )
+            .unwrap();
+        let server_config = quinn::ServerConfig::with_crypto(Arc::new(
+            quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto).unwrap(),
+        ));
 
-/// Demonstrates QUIC-like UDP transport with independent streams
-fn demo_http3_quic() {
-    println!("  QUIC runs over UDP — here's a simplified demo:\n");
+        let server_addr: std::net::SocketAddr = "127.0.0.1:9007".parse().unwrap();
+        let server_endpoint = quinn::Endpoint::server(server_config, server_addr).unwrap();
+        println!("  [QUIC Server] Listening on UDP {} (not TCP!)", server_addr);
 
-    let server_addr = "127.0.0.1:9004";
-    let server_socket = UdpSocket::bind(server_addr).unwrap();
-    server_socket
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .ok();
+        // Server: accept one connection, handle streams independently
+        let server = tokio::spawn(async move {
+            let incoming = server_endpoint.accept().await.unwrap();
+            let connection = incoming.await.unwrap();
+            println!(
+                "  [QUIC Server] Client connected (conn_id={})",
+                connection.stable_id()
+            );
 
-    let server = thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        let mut received = 0;
+            // Accept bidirectional streams in a loop — each handled independently
+            loop {
+                match connection.accept_bi().await {
+                    Ok((mut send, mut recv)) => {
+                        tokio::spawn(async move {
+                            let data = recv.read_to_end(4096).await.unwrap();
+                            let request = String::from_utf8_lossy(&data);
 
-        while received < 4 {
-            match server_socket.recv_from(&mut buf) {
-                Ok((size, src)) => {
-                    if let Some(pkt) = QuicLikePacket::decode(&buf[..size]) {
-                        println!(
-                            "    [QUIC Server] conn={:#x} stream={} pkt#{} payload=\"{}\"",
-                            pkt.connection_id,
-                            pkt.stream_id,
-                            pkt.packet_number,
-                            String::from_utf8_lossy(&pkt.payload)
-                        );
+                            // Slow endpoint: simulate 300ms delay
+                            if request.contains("slow") {
+                                tokio::time::sleep(Duration::from_millis(300)).await;
+                            }
 
-                        // Send response on same stream
-                        let resp = QuicLikePacket {
-                            connection_id: pkt.connection_id,
-                            packet_number: pkt.packet_number,
-                            stream_id: pkt.stream_id,
-                            payload: format!("ACK stream {}", pkt.stream_id).into_bytes(),
-                        };
-                        server_socket.send_to(&resp.encode(), src).ok();
+                            let response = format!("QUIC OK: {}", request);
+                            send.write_all(response.as_bytes()).await.unwrap();
+                            send.finish().unwrap();
+                        });
                     }
-                    received += 1;
+                    Err(_) => break, // Connection closed
                 }
-                Err(_) => break,
             }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // ── Step 3: QUIC client connects ─────────────────────────────────
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert_der).unwrap();
+        let client_crypto = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let client_config = quinn::ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto).unwrap(),
+        ));
+
+        let mut client_endpoint =
+            quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        client_endpoint.set_default_client_config(client_config);
+
+        // Time the QUIC handshake (1 RTT, includes TLS 1.3!)
+        let handshake_start = Instant::now();
+        let connection = client_endpoint
+            .connect(server_addr, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        let handshake_time = handshake_start.elapsed();
+
+        println!(
+            "  [QUIC Client] Connected! Handshake: {:?} (1 RTT, TLS 1.3 included!)",
+            handshake_time
+        );
+        println!("  [QUIC Client] Transport: UDP (not TCP)");
+        println!(
+            "  [QUIC Client] Connection ID: {} (survives IP changes!)\n",
+            connection.stable_id()
+        );
+
+        // ── Step 4: Open 4 streams concurrently ──────────────────────────
+        // Each stream is independent — slow stream doesn't block fast ones.
+        // This is the key advantage over HTTP/2 (TCP), where a lost TCP packet
+        // blocks ALL streams.
+        println!("  4 bidirectional streams on ONE QUIC connection:\n");
+
+        let requests = vec![
+            ("Stream 1", "GET /fast1"),
+            ("Stream 2", "GET /slow (300ms)"),
+            ("Stream 3", "GET /fast2"),
+            ("Stream 4", "GET /fast3"),
+        ];
+
+        let overall_start = Instant::now();
+        let mut handles = vec![];
+
+        for (name, req) in &requests {
+            let conn = connection.clone();
+            let name = name.to_string();
+            let req = req.to_string();
+            handles.push(tokio::spawn(async move {
+                let start = Instant::now();
+                let (mut send, mut recv) = conn.open_bi().await.unwrap();
+                send.write_all(req.as_bytes()).await.unwrap();
+                send.finish().unwrap();
+
+                let response = recv.read_to_end(4096).await.unwrap();
+                let elapsed = start.elapsed();
+                let resp_str = String::from_utf8_lossy(&response).to_string();
+                (name, req, resp_str, elapsed)
+            }));
         }
+
+        let mut results = vec![];
+        for h in handles {
+            results.push(h.await.unwrap());
+        }
+        results.sort_by(|a, b| a.3.cmp(&b.3)); // Sort by completion time
+
+        for (name, req, resp, elapsed) in &results {
+            println!("    {} | {} -> {} ({:?})", name, req, resp, elapsed);
+        }
+
+        let total = overall_start.elapsed();
+        println!("\n  Total: {:?}", total);
+        println!("  ^ /slow (300ms) did NOT block the fast streams!\n");
+
+        // Clean up
+        connection.close(0u32.into(), b"done");
+        client_endpoint.wait_idle().await;
+        server.abort();
     });
 
-    thread::sleep(Duration::from_millis(50));
-
-    let client_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    client_socket
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .ok();
-
-    // Send packets on independent streams (the key QUIC advantage!)
-    // Stream 1 and Stream 3 don't block each other
-    let packets = vec![
-        QuicLikePacket {
-            connection_id: 0xDEADBEEF,
-            packet_number: 1,
-            stream_id: 1,
-            payload: b"GET /".to_vec(),
-        },
-        QuicLikePacket {
-            connection_id: 0xDEADBEEF,
-            packet_number: 2,
-            stream_id: 3,
-            payload: b"GET /api".to_vec(),
-        },
-        QuicLikePacket {
-            connection_id: 0xDEADBEEF,
-            packet_number: 3,
-            stream_id: 1,
-            payload: b"POST /data".to_vec(),
-        },
-        QuicLikePacket {
-            connection_id: 0xDEADBEEF,
-            packet_number: 4,
-            stream_id: 5,
-            payload: b"GET /img".to_vec(),
-        },
-    ];
-
-    for pkt in &packets {
-        client_socket
-            .send_to(&pkt.encode(), server_addr)
-            .unwrap();
-    }
-
-    // Read responses
-    let mut buf = [0u8; 4096];
-    for _ in 0..4 {
-        if let Ok((size, _)) = client_socket.recv_from(&mut buf) {
-            if let Some(pkt) = QuicLikePacket::decode(&buf[..size]) {
-                println!(
-                    "    [QUIC Client] response: \"{}\"",
-                    String::from_utf8_lossy(&pkt.payload)
-                );
-            }
-        }
-    }
-
-    server.join().ok();
-
-    println!("\n  KEY DIFFERENCES from TCP:");
+    println!("  WHY THIS MATTERS vs HTTP/2:");
+    println!("  HTTP/2 multiplexes streams on TCP. If a TCP packet is lost,");
+    println!("  ALL streams stall until retransmit (TCP HOL blocking).");
+    println!("  QUIC (UDP) has independent streams — packet loss on Stream 2");
+    println!("  only blocks Stream 2. Streams 1, 3, 4 keep flowing.");
+    println!();
     println!("  ┌─────────────────┬──────────────────┬──────────────────┐");
-    println!("  │                 │ TCP (HTTP/2)     │ QUIC (HTTP/3)    │");
+    println!("  │                 │ HTTP/2 (TCP)     │ HTTP/3 (QUIC)    │");
     println!("  ├─────────────────┼──────────────────┼──────────────────┤");
     println!("  │ Transport       │ TCP              │ UDP              │");
-    println!("  │ Handshake       │ 1-3 RTT          │ 0-1 RTT          │");
+    println!("  │ Handshake       │ TCP+TLS = 2-3 RTT│ 1 RTT (0-RTT!)  │");
     println!("  │ HOL blocking    │ YES (TCP layer)  │ NO (per-stream)  │");
     println!("  │ Encryption      │ TLS on top       │ Built-in TLS 1.3 │");
-    println!("  │ Conn migration  │ NO (tied to IP)  │ YES (conn ID)    │");
+    println!("  │ Conn migration  │ NO (IP:port)     │ YES (conn ID)    │");
     println!("  │ Loss recovery   │ Per-connection   │ Per-stream       │");
-    println!("  └─────────────────┴──────────────────┴──────────────────┘\n");
+    println!("  └─────────────────┴──────────────────┴──────────────────┘");
+    println!();
 }
 
 // =============================================================================
@@ -1260,7 +1274,177 @@ fn run_sse_client(addr: &str) {
 }
 
 // =============================================================================
-// 7. Connection Pool
+// 8. TLS — Transport Layer Security
+// =============================================================================
+//
+// TLS encrypts the connection between client and server.
+// Without TLS: anyone on the network can read your HTTP traffic (passwords, tokens, etc.)
+// With TLS: traffic is encrypted, authenticated, and tamper-proof.
+//
+// TLS handshake adds 1-2 RTT of latency but provides:
+// - Encryption: AES-256-GCM or ChaCha20-Poly1305
+// - Authentication: server proves identity with a certificate
+// - Integrity: HMAC prevents tampering
+//
+// We use rustls (the same TLS library quinn/QUIC uses) to demonstrate
+// a real TLS handshake with certificate generation.
+
+/// Real TLS demo: generate a cert, start a TLS server, connect with a TLS client.
+fn demo_tls() {
+    println!("\n  ═══ demo_tls ═══\n");
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        // ── Step 1: Generate self-signed certificate ─────────────────────
+        // In production, you'd get this from Let's Encrypt or your CA.
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert_der = rustls_pki_types::CertificateDer::from(cert.cert);
+        let key_der = rustls_pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
+
+        println!("  [Step 1] Generated self-signed X.509 certificate");
+        println!("    Subject: localhost");
+        println!("    Cert size: {} bytes (DER encoded)", cert_der.len());
+        println!("    Key type: PKCS#8 private key\n");
+
+        // ── Step 2: Configure TLS server ─────────────────────────────────
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth() // No mTLS (mutual TLS) for this demo
+            .with_single_cert(
+                vec![cert_der.clone()],
+                rustls_pki_types::PrivateKeyDer::Pkcs8(key_der),
+            )
+            .unwrap();
+
+        let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:9008").await.unwrap();
+        println!("  [Step 2] TLS server listening on 127.0.0.1:9008");
+
+        // Server: accept one TLS connection, read request, send response
+        let acceptor = tls_acceptor.clone();
+        let server = tokio::spawn(async move {
+            let (tcp_stream, peer) = listener.accept().await.unwrap();
+            println!("  [Server] TCP connection from {}", peer);
+
+            // TLS handshake happens here — this is where the magic is
+            let handshake_start = Instant::now();
+            let tls_stream = acceptor.accept(tcp_stream).await.unwrap();
+            let handshake_time = handshake_start.elapsed();
+
+            let (_, server_conn) = tls_stream.get_ref();
+            println!(
+                "  [Server] TLS handshake complete ({:?})",
+                handshake_time
+            );
+            println!(
+                "  [Server] Protocol: {:?}",
+                server_conn.protocol_version().unwrap()
+            );
+            println!(
+                "  [Server] Cipher: {:?}",
+                server_conn.negotiated_cipher_suite().unwrap()
+            );
+            println!(
+                "  [Server] ALPN: {:?}",
+                server_conn.alpn_protocol().map(|p| String::from_utf8_lossy(p).to_string())
+            );
+
+            // Read HTTP request over TLS
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut tls_stream = tls_stream;
+            let mut buf = [0u8; 4096];
+            let n = tls_stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            println!("  [Server] Received (encrypted on wire): {}", request.lines().next().unwrap_or(""));
+
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 21\r\n\r\nHello over TLS 1.3!\n";
+            tls_stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // ── Step 3: TLS client connects ──────────────────────────────────
+        // Client must trust the server's certificate
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert_der).unwrap();
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        let tcp_stream = tokio::net::TcpStream::connect("127.0.0.1:9008").await.unwrap();
+        println!("\n  [Client] TCP connected, starting TLS handshake...");
+
+        let handshake_start = Instant::now();
+        let server_name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+        let mut tls_stream = connector.connect(server_name, tcp_stream).await.unwrap();
+        let handshake_time = handshake_start.elapsed();
+
+        let (_, client_conn) = tls_stream.get_ref();
+        println!("  [Client] TLS handshake complete ({:?})", handshake_time);
+        println!(
+            "  [Client] Protocol: {:?}",
+            client_conn.protocol_version().unwrap()
+        );
+        println!(
+            "  [Client] Cipher: {:?}",
+            client_conn.negotiated_cipher_suite().unwrap()
+        );
+
+        // Send HTTP request over TLS
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        tls_stream.write_all(request.as_bytes()).await.unwrap();
+
+        let mut buf = [0u8; 4096];
+        let n = tls_stream.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        println!("  [Client] Response: {}\n", response.lines().last().unwrap_or(""));
+
+        server.await.unwrap();
+    });
+
+    println!("  TLS HANDSHAKE FLOW:");
+    println!("  ┌─────────────────────────────────────────────────────────┐");
+    println!("  │ Client                              Server              │");
+    println!("  │   │                                    │                │");
+    println!("  │   │── ClientHello ────────────────────►│  (1 RTT)      │");
+    println!("  │   │   supported ciphers, TLS version   │                │");
+    println!("  │   │   random, SNI (hostname)           │                │");
+    println!("  │   │                                    │                │");
+    println!("  │   │◄── ServerHello + Certificate ──────│  (1 RTT)      │");
+    println!("  │   │    chosen cipher, server random    │                │");
+    println!("  │   │    X.509 cert (proves identity)    │                │");
+    println!("  │   │                                    │                │");
+    println!("  │   │── Finished ───────────────────────►│               │");
+    println!("  │   │   (key exchange complete)          │                │");
+    println!("  │   │                                    │                │");
+    println!("  │   │═══ Encrypted Application Data ════│               │");
+    println!("  └─────────────────────────────────────────────────────────┘");
+    println!();
+    println!("  TLS VERSION COMPARISON:");
+    println!("  ┌──────────┬──────────┬──────────┬───────────┬───────────┐");
+    println!("  │ Version  │Handshake │ Ciphers  │ 0-RTT     │ Status    │");
+    println!("  ├──────────┼──────────┼──────────┼───────────┼───────────┤");
+    println!("  │ TLS 1.0  │ 2 RTT    │ Weak     │ No        │ DEAD      │");
+    println!("  │ TLS 1.1  │ 2 RTT    │ Weak     │ No        │ DEAD      │");
+    println!("  │ TLS 1.2  │ 2 RTT    │ Mixed    │ No        │ Legacy    │");
+    println!("  │ TLS 1.3  │ 1 RTT    │ Strong   │ Yes (PSK) │ Current   │");
+    println!("  └──────────┴──────────┴──────────┴───────────┴───────────┘");
+    println!();
+    println!("  KEY CONCEPTS:");
+    println!("  • Certificate: X.509 file proving server identity (signed by CA)");
+    println!("  • CA (Certificate Authority): trusted third party (Let's Encrypt, DigiCert)");
+    println!("  • ALPN: negotiates HTTP version during TLS handshake (h2, http/1.1)");
+    println!("  • SNI: client sends hostname in ClientHello (needed for virtual hosting)");
+    println!("  • 0-RTT (TLS 1.3): resumed connections can send data immediately");
+    println!("  • mTLS: mutual TLS — both client AND server present certificates");
+    println!();
+}
+
+// =============================================================================
+// 9. Connection Pool
 // =============================================================================
 
 struct ConnectionPool {
@@ -1330,9 +1514,9 @@ fn main() {
     println!("━━━ 3b. HTTP/2 — Streaming Large Payloads ━━━");
     demo_http2_streaming(&base_url);
 
-    // ── Demo 4: HTTP/3 / QUIC ────────────────────────────────────────────
-    println!("━━━ 4. HTTP/3 / QUIC — UDP-Based Transport ━━━");
-    demo_http3_quic();
+    // ── Demo 4: HTTP/3 / QUIC (Real) ───────────────────────────────────
+    println!("━━━ 4. HTTP/3 / QUIC — Real QUIC over UDP (quinn) ━━━");
+    demo_real_quic();
 
     // ── Demo 5: WebSocket ────────────────────────────────────────────────
     println!("━━━ 5. WebSocket — Full-Duplex Communication ━━━");
