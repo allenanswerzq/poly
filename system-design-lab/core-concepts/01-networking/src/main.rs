@@ -9,10 +9,8 @@
 //! - Server-Sent Events (SSE) (server push over HTTP)
 //! - Connection pooling
 
-use base64::Engine;
 use futures::StreamExt;
-use sha1::{Digest, Sha1};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -816,356 +814,146 @@ fn demo_real_quic() {
 }
 
 // =============================================================================
-// 5. WebSocket Server/Client — Full Handshake + Binary Framing
+// 5. WebSocket — Real Server + Client (tokio-tungstenite)
 // =============================================================================
 //
 // WebSocket provides full-duplex communication over a single TCP connection.
 // Lifecycle:
-//   1. Client sends HTTP Upgrade request with Sec-WebSocket-Key
-//   2. Server responds with 101 Switching Protocols + Sec-WebSocket-Accept
-//   3. Both sides exchange WebSocket frames (not HTTP anymore)
-//   4. Either side can send Close frame
+//   1. Client sends HTTP/1.1 Upgrade request → Server responds 101
+//   2. TCP socket switches from HTTP to WebSocket binary framing
+//   3. Either side can send messages at any time (full-duplex)
+//   4. Either side sends Close frame to end
+//
+// We use tokio-tungstenite (production WebSocket library) for real
+// WebSocket connections — not hand-written frame parsing.
 
-const WS_MAGIC_GUID: &str = "258EAFA5-E914-47DA-95CA-5AB5DC76E598";
+/// Real WebSocket demo using tokio-tungstenite.
+fn demo_websocket() {
+    println!("\n  ═══ demo_websocket ═══\n");
 
-/// WebSocket opcodes
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(u8)]
-enum WsOpcode {
-    Text = 0x1,
-    Binary = 0x2,
-    Close = 0x8,
-    Ping = 0x9,
-    Pong = 0xA,
-}
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        // ── Step 1: Start WebSocket server ───────────────────────────────
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:9010").await.unwrap();
+        println!("  [WS Server] Listening on 127.0.0.1:9010");
 
-impl WsOpcode {
-    fn from_byte(b: u8) -> Option<Self> {
-        match b & 0x0F {
-            0x1 => Some(Self::Text),
-            0x2 => Some(Self::Binary),
-            0x8 => Some(Self::Close),
-            0x9 => Some(Self::Ping),
-            0xA => Some(Self::Pong),
-            _ => None,
-        }
-    }
-}
+        let server = tokio::spawn(async move {
+            let (tcp_stream, peer) = listener.accept().await.unwrap();
+            println!("  [WS Server] TCP connection from {}", peer);
 
-/// WebSocket frame (simplified — handles payloads up to 125 bytes for demo)
-///
-/// Wire format:
-///   Byte 0: [FIN(1) RSV(3) OPCODE(4)]
-///   Byte 1: [MASK(1) LENGTH(7)]
-///   If MASK=1: 4 bytes masking key
-///   Payload data (XOR'd with mask if MASK=1)
-struct WsFrame {
-    fin: bool,
-    opcode: WsOpcode,
-    mask: Option<[u8; 4]>,
-    payload: Vec<u8>,
-}
+            // Accept the WebSocket upgrade — this does the HTTP/1.1 → 101 handshake
+            let ws_stream = tokio_tungstenite::accept_async(tcp_stream).await.unwrap();
+            println!("  [WS Server] WebSocket handshake complete (HTTP → WebSocket)");
 
-impl WsFrame {
-    fn text(msg: &str) -> Self {
-        Self {
-            fin: true,
-            opcode: WsOpcode::Text,
-            mask: None,
-            payload: msg.as_bytes().to_vec(),
-        }
-    }
+            let (mut write, mut read) = futures::StreamExt::split(ws_stream);
 
-    fn text_masked(msg: &str, mask_key: [u8; 4]) -> Self {
-        Self {
-            fin: true,
-            opcode: WsOpcode::Text,
-            mask: Some(mask_key),
-            payload: msg.as_bytes().to_vec(),
-        }
-    }
-
-    fn close() -> Self {
-        Self {
-            fin: true,
-            opcode: WsOpcode::Close,
-            mask: None,
-            payload: vec![],
-        }
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-
-        // Byte 0: FIN + opcode
-        let byte0 = if self.fin { 0x80 } else { 0x00 } | (self.opcode as u8);
-        buf.push(byte0);
-
-        // Byte 1: MASK + length
-        let mask_bit = if self.mask.is_some() { 0x80 } else { 0x00 };
-        let len = self.payload.len();
-        if len <= 125 {
-            buf.push(mask_bit | len as u8);
-        } else if len <= 65535 {
-            buf.push(mask_bit | 126);
-            buf.extend_from_slice(&(len as u16).to_be_bytes());
-        } else {
-            buf.push(mask_bit | 127);
-            buf.extend_from_slice(&(len as u64).to_be_bytes());
-        }
-
-        // Masking key + masked payload
-        if let Some(mask_key) = self.mask {
-            buf.extend_from_slice(&mask_key);
-            for (i, &b) in self.payload.iter().enumerate() {
-                buf.push(b ^ mask_key[i % 4]);
-            }
-        } else {
-            buf.extend_from_slice(&self.payload);
-        }
-
-        buf
-    }
-
-    fn decode(data: &[u8]) -> Option<(Self, usize)> {
-        if data.len() < 2 {
-            return None;
-        }
-
-        let fin = data[0] & 0x80 != 0;
-        let opcode = WsOpcode::from_byte(data[0])?;
-        let masked = data[1] & 0x80 != 0;
-        let mut payload_len = (data[1] & 0x7F) as usize;
-        let mut offset = 2;
-
-        if payload_len == 126 {
-            if data.len() < 4 {
-                return None;
-            }
-            payload_len =
-                u16::from_be_bytes([data[2], data[3]]) as usize;
-            offset = 4;
-        } else if payload_len == 127 {
-            if data.len() < 10 {
-                return None;
-            }
-            payload_len = u64::from_be_bytes(
-                data[2..10].try_into().ok()?,
-            ) as usize;
-            offset = 10;
-        }
-
-        let mask_key = if masked {
-            if data.len() < offset + 4 {
-                return None;
-            }
-            let key: [u8; 4] = data[offset..offset + 4].try_into().ok()?;
-            offset += 4;
-            Some(key)
-        } else {
-            None
-        };
-
-        if data.len() < offset + payload_len {
-            return None;
-        }
-
-        let mut payload = data[offset..offset + payload_len].to_vec();
-
-        // Unmask payload
-        if let Some(key) = mask_key {
-            for (i, b) in payload.iter_mut().enumerate() {
-                *b ^= key[i % 4];
-            }
-        }
-
-        Some((
-            Self {
-                fin,
-                opcode,
-                mask: mask_key,
-                payload,
-            },
-            offset + payload_len,
-        ))
-    }
-}
-
-/// Compute the Sec-WebSocket-Accept value per RFC 6455
-fn ws_accept_key(client_key: &str) -> String {
-    let mut hasher = Sha1::new();
-    hasher.update(client_key.trim().as_bytes());
-    hasher.update(WS_MAGIC_GUID.as_bytes());
-    let hash = hasher.finalize();
-    base64::engine::general_purpose::STANDARD.encode(hash)
-}
-
-/// WebSocket echo server
-fn run_ws_server(addr: &str) -> std::io::Result<()> {
-    let listener = TcpListener::bind(addr)?;
-    println!("[WebSocket] Listening on {}", addr);
-
-    for stream in listener.incoming().take(1) {
-        match stream {
-            Ok(stream) => {
-                handle_ws_connection(stream);
-            }
-            Err(e) => eprintln!("[WebSocket] Error: {}", e),
-        }
-    }
-    Ok(())
-}
-
-fn handle_ws_connection(mut stream: TcpStream) {
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-
-    // Step 1: Read the HTTP Upgrade request
-    let mut headers = Vec::new();
-    let mut ws_key = String::new();
-
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).ok();
-        if line.trim().is_empty() {
-            break;
-        }
-        let lower = line.to_lowercase();
-        if lower.starts_with("sec-websocket-key:") {
-            ws_key = line.split(':').nth(1).unwrap_or("").trim().to_string();
-        }
-        headers.push(line);
-    }
-
-    println!(
-        "[WebSocket] Upgrade request received, key: {}",
-        ws_key
-    );
-
-    // Step 2: Send 101 Switching Protocols
-    let accept = ws_accept_key(&ws_key);
-    let response = format!(
-        "HTTP/1.1 101 Switching Protocols\r\n\
-         Upgrade: websocket\r\n\
-         Connection: Upgrade\r\n\
-         Sec-WebSocket-Accept: {}\r\n\
-         \r\n",
-        accept
-    );
-    stream.write_all(response.as_bytes()).unwrap();
-    stream.flush().unwrap();
-    println!("[WebSocket] Handshake complete, Sec-WebSocket-Accept: {}", accept);
-
-    // Step 3: Exchange frames
-    let mut frame_buf = vec![0u8; 4096];
-    loop {
-        let n = match stream.read(&mut frame_buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
-        };
-
-        if let Some((frame, _)) = WsFrame::decode(&frame_buf[..n]) {
-            match frame.opcode {
-                WsOpcode::Text => {
-                    let msg = String::from_utf8_lossy(&frame.payload);
-                    println!("[WebSocket Server] Received text: \"{}\"", msg);
-
-                    // Echo back (server->client frames are NOT masked per RFC 6455)
-                    let echo = WsFrame::text(&format!("echo: {}", msg));
-                    stream.write_all(&echo.encode()).unwrap();
-                    stream.flush().unwrap();
+            // Echo server: read messages and send them back
+            let mut msg_count = 0u32;
+            while let Some(Ok(msg)) = futures::StreamExt::next(&mut read).await {
+                use tokio_tungstenite::tungstenite::Message;
+                match msg {
+                    Message::Text(text) => {
+                        msg_count += 1;
+                        println!("  [WS Server] Received #{}: \"{}\"", msg_count, text);
+                        let echo = format!("echo: {}", text);
+                        futures::SinkExt::send(
+                            &mut write,
+                            Message::Text(echo.into()),
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    Message::Ping(data) => {
+                        println!("  [WS Server] Ping received, sending Pong");
+                        futures::SinkExt::send(&mut write, Message::Pong(data))
+                            .await
+                            .unwrap();
+                    }
+                    Message::Close(_) => {
+                        println!("  [WS Server] Close frame received");
+                        break;
+                    }
+                    _ => {}
                 }
-                WsOpcode::Ping => {
-                    let pong = WsFrame {
-                        fin: true,
-                        opcode: WsOpcode::Pong,
-                        mask: None,
-                        payload: frame.payload,
-                    };
-                    stream.write_all(&pong.encode()).unwrap();
-                }
-                WsOpcode::Close => {
-                    println!("[WebSocket Server] Close frame received");
-                    let close = WsFrame::close();
-                    stream.write_all(&close.encode()).ok();
-                    break;
-                }
-                _ => {}
+            }
+            println!("  [WS Server] Connection closed ({} messages exchanged)", msg_count);
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // ── Step 2: WebSocket client connects ────────────────────────────
+        let handshake_start = Instant::now();
+        let (ws_stream, response) = tokio_tungstenite::connect_async("ws://127.0.0.1:9010")
+            .await
+            .unwrap();
+        let handshake_time = handshake_start.elapsed();
+
+        println!("  [WS Client] Connected! Handshake: {:?}", handshake_time);
+        println!("  [WS Client] HTTP response status: {}", response.status());
+        println!(
+            "  [WS Client] Upgrade: {}",
+            response
+                .headers()
+                .get("upgrade")
+                .map(|v| v.to_str().unwrap_or(""))
+                .unwrap_or("none")
+        );
+        println!("  [WS Client] Protocol is now WebSocket (HTTP is gone)\n");
+
+        let (mut write, mut read) = futures::StreamExt::split(ws_stream);
+
+        // ── Step 3: Exchange messages (full-duplex) ──────────────────────
+        use tokio_tungstenite::tungstenite::Message;
+
+        let messages = ["Hello WebSocket!", "How are you?", "Real-time is cool"];
+        for msg in &messages {
+            let start = Instant::now();
+            futures::SinkExt::send(&mut write, Message::Text((*msg).into()))
+                .await
+                .unwrap();
+
+            if let Some(Ok(resp)) = futures::StreamExt::next(&mut read).await {
+                println!(
+                    "  [WS Client] Sent: \"{}\" → Got: \"{}\" ({:?})",
+                    msg,
+                    resp.into_text().unwrap_or_default(),
+                    start.elapsed()
+                );
             }
         }
-    }
-}
 
-/// WebSocket client that performs handshake and exchanges messages
-fn run_ws_client(addr: &str) {
-    let mut stream = TcpStream::connect(addr).unwrap();
-    let ws_key = "dGhlIHNhbXBsZSBub25jZQ=="; // Example key from RFC
-
-    // Step 1: Send HTTP Upgrade request
-    let request = format!(
-        "GET /chat HTTP/1.1\r\n\
-         Host: {}\r\n\
-         Upgrade: websocket\r\n\
-         Connection: Upgrade\r\n\
-         Sec-WebSocket-Key: {}\r\n\
-         Sec-WebSocket-Version: 13\r\n\
-         \r\n",
-        addr, ws_key
-    );
-    stream.write_all(request.as_bytes()).unwrap();
-    stream.flush().unwrap();
-
-    // Step 2: Read 101 response
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let mut line = String::new();
-    reader.read_line(&mut line).ok();
-    println!("[WebSocket Client] Server response: {}", line.trim());
-
-    // Consume remaining headers
-    loop {
-        line.clear();
-        reader.read_line(&mut line).ok();
-        if line.trim().is_empty() {
-            break;
-        }
-    }
-
-    // Verify handshake
-    let expected_accept = ws_accept_key(ws_key);
-    println!(
-        "[WebSocket Client] Expected Accept: {}",
-        expected_accept
-    );
-
-    // Step 3: Send messages (client->server frames MUST be masked per RFC 6455)
-    let messages = ["Hello WebSocket!", "How are you?", "Goodbye"];
-    let mask_key = [0x12, 0x34, 0x56, 0x78]; // In production, use random key
-
-    for msg in &messages {
-        let frame = WsFrame::text_masked(msg, mask_key);
-        stream.write_all(&frame.encode()).unwrap();
-        stream.flush().unwrap();
-
-        // Read echo response
-        let mut buf = vec![0u8; 4096];
-        let n = stream.read(&mut buf).unwrap_or(0);
-        if let Some((resp_frame, _)) = WsFrame::decode(&buf[..n]) {
+        // ── Step 4: Ping/Pong (keep-alive) ──────────────────────────────
+        println!();
+        let ping_start = Instant::now();
+        futures::SinkExt::send(&mut write, Message::Ping(vec![1, 2, 3, 4].into()))
+            .await
+            .unwrap();
+        if let Some(Ok(pong)) = futures::StreamExt::next(&mut read).await {
             println!(
-                "[WebSocket Client] Sent: \"{}\" -> Got: \"{}\"",
-                msg,
-                String::from_utf8_lossy(&resp_frame.payload)
+                "  [WS Client] Ping → {:?} ({:?})",
+                pong,
+                ping_start.elapsed()
             );
         }
-    }
 
-    // Send close frame
-    let close = WsFrame {
-        fin: true,
-        opcode: WsOpcode::Close,
-        mask: Some(mask_key),
-        payload: vec![],
-    };
-    stream.write_all(&close.encode()).ok();
-    println!("[WebSocket Client] Connection closed\n");
+        // ── Step 5: Close ────────────────────────────────────────────────
+        futures::SinkExt::send(&mut write, Message::Close(None)).await.unwrap();
+        println!("  [WS Client] Sent Close frame");
+
+        server.await.ok();
+    });
+
+    println!();
+    println!("  WEBSOCKET LIFECYCLE:");
+    println!("  1. HTTP/1.1 Upgrade handshake (GET + 101 Switching Protocols)");
+    println!("  2. TCP socket switches to WebSocket binary framing");
+    println!("  3. Full-duplex: both sides send messages anytime (no req/resp)");
+    println!("  4. Ping/Pong for keep-alive (detect dead connections)");
+    println!("  5. Close frame for graceful shutdown");
+    println!();
+    println!("  Frame overhead: 2-6 bytes per message (vs ~800 bytes for HTTP headers)");
+    println!("  Latency: <1ms per message (no HTTP overhead, just frame header)");
+    println!();
 }
 
 // =============================================================================
@@ -1535,6 +1323,11 @@ impl ConnectionPool {
 // =============================================================================
 
 fn main() {
+    // Install rustls crypto provider (ring) before any TLS/QUIC operations
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     println!("╔══════════════════════════════════════════════════╗");
     println!("║       Networking Essentials — Full Demo          ║");
     println!("╚══════════════════════════════════════════════════╝\n");
@@ -1568,19 +1361,9 @@ fn main() {
     println!("━━━ 4. HTTP/3 / QUIC — Real QUIC over UDP (quinn) ━━━");
     demo_real_quic();
 
-    // ── Demo 5: WebSocket ────────────────────────────────────────────────
-    println!("━━━ 5. WebSocket — Full-Duplex Communication ━━━");
-    println!("  Handshake flow:");
-    println!("  Client → Server: GET /chat HTTP/1.1");
-    println!("                   Upgrade: websocket");
-    println!("                   Sec-WebSocket-Key: <base64 nonce>");
-    println!("  Server → Client: HTTP/1.1 101 Switching Protocols");
-    println!("                   Sec-WebSocket-Accept: SHA1(key+GUID)\n");
-
-    let ws_addr = "127.0.0.1:9003";
-    let _ws_server = thread::spawn(move || run_ws_server(ws_addr).ok());
-    thread::sleep(Duration::from_millis(50));
-    run_ws_client(ws_addr);
+    // ── Demo 5: WebSocket (Real) ───────────────────────────────────────
+    println!("━━━ 5. WebSocket — Real Full-Duplex (tokio-tungstenite) ━━━");
+    demo_websocket();
 
     // ── Demo 6: Server-Sent Events ───────────────────────────────────────
     println!("━━━ 6. Server-Sent Events (SSE) — Server Push ━━━");
@@ -1599,8 +1382,12 @@ fn main() {
     thread::sleep(Duration::from_millis(50));
     run_sse_client(sse_addr);
 
-    // ── Demo 7: Connection Pool ──────────────────────────────────────────
-    println!("━━━ 7. Connection Pool ━━━");
+    // ── Demo 7: TLS ────────────────────────────────────────────────────
+    println!("━━━ 7. TLS — Real TLS 1.3 Handshake (rustls) ━━━");
+    demo_tls();
+
+    // ── Demo 8: Connection Pool ──────────────────────────────────────────
+    println!("━━━ 8. Connection Pool ━━━");
     // Start a quick server for pool demo
     let pool_addr = "127.0.0.1:9006";
     let _pool_server = thread::spawn(move || {
