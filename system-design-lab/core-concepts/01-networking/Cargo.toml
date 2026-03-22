@@ -9,3 +9,5 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { workspace = true }
+sha1 = "0.10"
+base64 = "0.22"

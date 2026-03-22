@@ -1,0 +1,12 @@
+[package]
+name = "web-crawler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
