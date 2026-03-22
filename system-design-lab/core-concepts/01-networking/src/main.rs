@@ -10,10 +10,12 @@
 //! - Connection pooling
 
 use base64::Engine;
+use futures::StreamExt;
 use sha1::{Digest, Sha1};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -92,7 +94,8 @@ fn start_http_server(addr: &str) {
                 .route("/", axum::routing::get(handle_root))
                 .route("/health", axum::routing::get(handle_health))
                 .route("/slow", axum::routing::get(handle_slow))
-                .route("/api/users", axum::routing::get(handle_users));
+                .route("/api/users", axum::routing::get(handle_users))
+                .route("/stream/:size_kb", axum::routing::get(handle_stream));
 
             let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
             println!("[HTTP Server] axum + hyper listening on {}", addr);
@@ -116,6 +119,27 @@ async fn handle_slow() -> axum::Json<serde_json::Value> {
 
 async fn handle_users() -> axum::Json<serde_json::Value> {
     axum::Json(json!([{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]))
+}
+
+/// Streams a response body in 16KB chunks — does NOT buffer the full payload.
+/// HTTP/2 sends each chunk as a separate DATA frame with flow control.
+async fn handle_stream(
+    axum::extract::Path(size_kb): axum::extract::Path<u32>,
+) -> axum::body::Body {
+    let chunk_size = 16 * 1024; // 16KB per DATA frame (HTTP/2 default max)
+    let total_bytes = (size_kb as usize) * 1024;
+
+    let stream = async_stream::stream! {
+        let mut sent = 0usize;
+        while sent < total_bytes {
+            let this_chunk = chunk_size.min(total_bytes - sent);
+            // Generate data on the fly — only 16KB in memory at a time
+            let chunk = vec![b'X'; this_chunk];
+            sent += this_chunk;
+            yield Ok::<_, std::io::Error>(bytes::Bytes::from(chunk));
+        }
+    };
+    axum::body::Body::from_stream(stream)
 }
 
 /// Demonstrates HTTP/1.1 keep-alive with a real HTTP client (reqwest).
@@ -446,6 +470,116 @@ fn demo_http2_multiplexing(base_url: &str) {
     println!("  Each request gets its own Stream ID (1, 3, 5, 7...).");
     println!("  Frames from different streams are interleaved on the wire.");
     println!("  HPACK compresses headers: ':method GET' = 1 byte (index 0x82).");
+    println!();
+}
+
+/// Demonstrates HTTP/2 streaming: large payload received chunk by chunk,
+/// while other requests complete concurrently on the SAME connection.
+fn demo_http2_streaming(base_url: &str) {
+    println!("\n  ═══ demo_http2_streaming ═══\n");
+    println!("  Q: What if the payload is huge (512KB)? Does it load into memory?");
+    println!("  A: NO! HTTP/2 streams it in ~16KB DATA frames with flow control.\n");
+
+    let base_url_owned = base_url.to_string();
+    let bytes_received = Arc::new(AtomicU64::new(0));
+    let bytes_clone = bytes_received.clone();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let client = reqwest::ClientBuilder::new()
+            .http2_prior_knowledge()
+            .build()
+            .unwrap();
+
+        println!("  Streaming 512KB + 3 fast requests CONCURRENTLY (one HTTP/2 connection):\n");
+
+        let overall_start = Instant::now();
+
+        let (stream_result, r1, r2, r3) = tokio::join!(
+            // Stream 512KB — received chunk by chunk, never holds full payload
+            async {
+                let start = Instant::now();
+                let resp = client
+                    .get(format!("{}/stream/512", base_url_owned))
+                    .send()
+                    .await
+                    .unwrap();
+                let version = resp.version();
+
+                let mut total = 0u64;
+                let mut chunk_count = 0u32;
+                let mut stream = resp.bytes_stream();
+
+                // Read chunk by chunk — only ~16KB in memory at a time
+                while let Some(result) = stream.next().await {
+                    let chunk = result.unwrap();
+                    total += chunk.len() as u64;
+                    chunk_count += 1;
+                    bytes_clone.store(total, Ordering::Relaxed);
+                }
+                (version, total, chunk_count, start.elapsed())
+            },
+            // These fast requests complete WHILE the 512KB stream is still going
+            async {
+                // Small delay so stream starts first
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                let start = Instant::now();
+                let resp = client.get(format!("{}/health", base_url_owned)).send().await.unwrap();
+                let streamed_so_far = bytes_clone.load(Ordering::Relaxed);
+                let body = resp.text().await.unwrap();
+                ("/health", body, start.elapsed(), streamed_so_far)
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(3)).await;
+                let start = Instant::now();
+                let resp = client.get(format!("{}/", base_url_owned)).send().await.unwrap();
+                let streamed_so_far = bytes_clone.load(Ordering::Relaxed);
+                let body = resp.text().await.unwrap();
+                ("/", body, start.elapsed(), streamed_so_far)
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(4)).await;
+                let start = Instant::now();
+                let resp = client.get(format!("{}/api/users", base_url_owned)).send().await.unwrap();
+                let streamed_so_far = bytes_clone.load(Ordering::Relaxed);
+                let body = resp.text().await.unwrap();
+                ("/api/users", body, start.elapsed(), streamed_so_far)
+            },
+        );
+
+        let total_time = overall_start.elapsed();
+
+        // Fast requests completed during the stream
+        for (path, body, elapsed, streamed) in [r1, r2, r3] {
+            println!(
+                "    GET {:12} -> {} ({:?}) ← stream had {}KB when this finished",
+                path, body, elapsed, streamed / 1024
+            );
+        }
+        println!(
+            "    GET /stream/512  -> {:?} {} bytes in {} chunks ({:?})",
+            stream_result.0, stream_result.1, stream_result.2, stream_result.3
+        );
+        println!("\n  Total time: {:?}", total_time);
+    });
+
+    println!();
+    println!("  KEY INSIGHTS:");
+    println!("  1. Server generated 512KB on the fly (async_stream), never buffered it all");
+    println!("  2. Client received it in ~32 chunks of 16KB (only 16KB in RAM at a time)");
+    println!("  3. /health, /, /api/users completed DURING the stream (interleaved frames)");
+    println!("  4. All 4 requests shared ONE TCP connection (HTTP/2 multiplexing)");
+    println!();
+    println!("  On the wire, HTTP/2 interleaves DATA frames from different streams:");
+    println!("    [DATA stream=1 16KB] [DATA stream=1 16KB] [HEADERS stream=3 /health]");
+    println!("    [DATA stream=3 resp] [DATA stream=1 16KB] [HEADERS stream=5 /]");
+    println!("    [DATA stream=5 resp] [DATA stream=1 16KB] ...");
+    println!();
+    println!("  Flow control prevents overwhelming the receiver:");
+    println!("    • Each stream has a receive window (default 64KB)");
+    println!("    • Sender pauses when window is full (WINDOW_UPDATE to resume)");
+    println!("    • Pausing one stream doesn't affect others");
+    println!("    • This is why HTTP/2 is safe for streaming files, video, gRPC, etc.");
     println!();
 }
 
@@ -1191,6 +1325,10 @@ fn main() {
     // ── Demo 3: HTTP/2 Real Multiplexing ─────────────────────────────────
     println!("━━━ 3. HTTP/2 — Real Multiplexing (10 concurrent requests) ━━━");
     demo_http2_multiplexing(&base_url);
+
+    // ── Demo 3b: HTTP/2 Streaming ────────────────────────────────────────
+    println!("━━━ 3b. HTTP/2 — Streaming Large Payloads ━━━");
+    demo_http2_streaming(&base_url);
 
     // ── Demo 4: HTTP/3 / QUIC ────────────────────────────────────────────
     println!("━━━ 4. HTTP/3 / QUIC — UDP-Based Transport ━━━");

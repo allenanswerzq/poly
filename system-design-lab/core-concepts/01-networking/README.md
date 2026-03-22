@@ -171,6 +171,139 @@ This tells the client: "I also speak HTTP/3 on UDP port 443." The client can the
 
 The key insight: **the client always proposes, the server decides**. And there's always a fallback — if the server doesn't support a newer version, the connection works at the older version. This is why HTTP versions are backward-compatible and the internet didn't break when HTTP/2 and HTTP/3 rolled out.
 
+## What Does Each Side Need to Support These Protocols?
+
+A common misunderstanding: "the client just sets a flag and it works." **Both sides must implement the full protocol.** Here's what the server and client each need for every protocol we've covered:
+
+### HTTP/1.1
+
+| | Server | Client |
+|---|---|---|
+| **Parse** | Read text request line + headers (`GET / HTTP/1.1\r\n...`) | Read text status line + headers (`HTTP/1.1 200 OK\r\n...`) |
+| **Body handling** | `Content-Length` or `Transfer-Encoding: chunked` | Same — read exact bytes or decode chunked |
+| **Keep-alive** | Don't close the socket after response; read next request | Reuse same TCP socket for next request (connection pool) |
+| **Library** | Any HTTP server (axum/hyper, nginx, Express) | Any HTTP client (reqwest, curl, fetch) |
+
+Simple text protocol — most languages have it built in.
+
+### HTTP/2
+
+| | Server | Client |
+|---|---|---|
+| **Binary framing** | Parse/encode 9-byte frame headers + payloads | Same — encode requests as HEADERS/DATA frames |
+| **Stream multiplexing** | Track N concurrent streams per connection | Match incoming frames to their stream IDs |
+| **HPACK compression** | Maintain static + dynamic header tables | Same — compress outgoing, decompress incoming |
+| **Flow control** | Send/receive WINDOW_UPDATE per stream | Same — respect receive windows, send updates |
+| **Connection preface** | Detect `PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n` | Send this 24-byte magic on connect |
+| **Negotiation** | ALPN support in TLS library | Propose `h2` in ALPN, or use h2c (prior knowledge) |
+| **Library** | hyper, h2 (Rust), nghttp2 (C), net/http (Go) | reqwest/h2 (Rust), libcurl, browsers |
+
+In our demo, **axum/hyper** handles all server-side HTTP/2 automatically. **reqwest/h2** handles the client side. `.http2_prior_knowledge()` tells reqwest to send the connection preface directly.
+
+### HTTP/3 / QUIC
+
+| | Server | Client |
+|---|---|---|
+| **Transport** | Listen on UDP (not TCP!) | Connect via UDP |
+| **QUIC implementation** | Full QUIC state machine: connection IDs, packet numbers, crypto, per-stream loss recovery | Same — implement QUIC as a client |
+| **TLS 1.3** | Built into QUIC handshake (mandatory, not optional) | Same |
+| **Stream multiplexing** | Independent streams over UDP (no TCP HOL blocking) | Same |
+| **Connection migration** | Accept packets from new IP with same connection ID | Re-send from new IP after WiFi→LTE switch |
+| **Advertisement** | Send `Alt-Svc: h3=":443"` in HTTP/2 responses | Parse `Alt-Svc`, try QUIC, fallback to TCP |
+| **Library** | quinn (Rust), quiche (C), msquic (Microsoft) | Same libraries, plus browsers natively |
+
+HTTP/3 is the hardest to deploy — you need a full QUIC stack on both sides, and your network must allow UDP.
+
+### WebSocket
+
+| | Server | Client |
+|---|---|---|
+| **Handshake** | Parse `Upgrade: websocket` + `Sec-WebSocket-Key`, respond with `101` + SHA-1 accept hash | Send HTTP Upgrade request with random `Sec-WebSocket-Key` |
+| **Framing** | Parse/encode WebSocket frames: FIN, opcode, mask, payload length | Same — client frames MUST be masked (server frames are NOT) |
+| **Opcodes** | Handle Text (0x1), Binary (0x2), Close (0x8), Ping (0x9), Pong (0xA) | Same |
+| **Ping/Pong** | Respond to Ping with Pong (keep-alive) | Send Ping, expect Pong |
+| **Close** | Send/receive Close frames for graceful shutdown | Same |
+| **Library** | tokio-tungstenite, ws (Node), gorilla/websocket (Go) | tungstenite, browser WebSocket API, ws |
+
+Our demo implements the full handshake + framing from scratch to show every byte on the wire.
+
+### SSE (Server-Sent Events)
+
+| | Server | Client |
+|---|---|---|
+| **Response** | Set `Content-Type: text/event-stream`, keep connection open | Send request with `Accept: text/event-stream` |
+| **Event format** | Write `id: N\nevent: type\ndata: payload\n\n` | Parse the `id:`, `event:`, `data:` fields |
+| **Reconnection** | Handle `Last-Event-ID` header on reconnect | Auto-reconnect with `Last-Event-ID` (browser does this) |
+| **Library** | Any HTTP server (just keep writing to the response) | Browser `EventSource` API, or manual parsing |
+
+SSE is the simplest — it's just a long-lived HTTP response. The server writes text lines, the client reads them.
+
+### The Pattern
+
+Across all protocols:
+- **Client proposes** the protocol (request line, ALPN, Upgrade header, Alt-Svc)
+- **Server decides** whether it supports it
+- **Both sides must implement** the wire format (framing, compression, flow control)
+- **Your application code doesn't change** — the library handles the protocol layer
+
+```
+Your code:    GET /api/users → JSON response     (same for ALL protocols)
+                    ↕                                        ↕
+Library:      HTTP/1.1 text    HTTP/2 binary    HTTP/3 QUIC    WebSocket frames
+                    ↕              ↕                ↕              ↕
+Wire:           TCP text       TCP binary       UDP binary     TCP binary
+```
+
+## HTTP/2 Large Payloads — Framing and Streaming
+
+What happens when you upload a 1GB file over HTTP/2? It does **NOT** load everything into memory. HTTP/2 uses **chunked DATA frames** with flow control:
+
+### How It Works
+
+A large payload is split into multiple DATA frames (default max 16KB each):
+
+```
+Upload 1GB file on Stream 5:
+
+  HEADERS frame (stream 5): POST /upload Content-Length: 1073741824
+  DATA frame (stream 5):    [16KB chunk 1]
+  DATA frame (stream 5):    [16KB chunk 2]
+  DATA frame (stream 3):    [response to another request — interleaved!]
+  DATA frame (stream 5):    [16KB chunk 3]
+  DATA frame (stream 5):    [16KB chunk 4]
+  ...65,536 DATA frames later...
+  DATA frame (stream 5, END_STREAM): [last chunk]
+```
+
+Key points:
+1. **Streaming**: Data flows through frame-by-frame. Neither client nor server needs 1GB of RAM for the transfer.
+2. **Interleaving**: Other streams' frames can be mixed in between your upload's DATA frames. A 1GB upload doesn't block other requests.
+3. **Flow control**: Each stream has a **receive window** (default 64KB). The receiver sends WINDOW_UPDATE frames to say "I've consumed some data, send me more." This prevents the sender from overwhelming a slow receiver.
+4. **Backpressure**: If the receiver stops sending WINDOW_UPDATE, the sender pauses that stream — without affecting other streams.
+
+### Flow Control Windows
+
+```
+Stream 5 flow:
+
+  Sender                              Receiver
+    │                                    │
+    │── DATA [16KB] ────────────────────►│  window: 64KB → 48KB
+    │── DATA [16KB] ────────────────────►│  window: 48KB → 32KB
+    │── DATA [16KB] ────────────────────►│  window: 32KB → 16KB
+    │── DATA [16KB] ────────────────────►│  window: 16KB → 0KB
+    │                                    │
+    │   (sender PAUSES — window full)    │
+    │                                    │
+    │◄── WINDOW_UPDATE [32KB] ──────────│  receiver processed some data
+    │                                    │  window: 0KB → 32KB
+    │── DATA [16KB] ────────────────────►│  window: 32KB → 16KB
+    │── DATA [16KB] ────────────────────►│  window: 16KB → 0KB
+    │   ...continues...                  │
+```
+
+This is why HTTP/2 is safe for streaming large files, video, or gRPC bidirectional streams — it's designed from the ground up for this.
+
 ## Head-of-Line Blocking — What It Actually Means
 
 A common misconception: "HTTP/1.1 HOL blocking means 1000 requests wait for the slowest one." **That's not how it works.** HOL blocking is **per-connection**, not per-client.
