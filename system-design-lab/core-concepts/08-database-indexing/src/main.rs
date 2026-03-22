@@ -276,7 +276,7 @@ fn main() {
     println!("=== Database Indexing (B-Tree) Demo ===\n");
 
     // Demo 1: Basic B-Tree operations
-    println!("--- Basic B-Tree Operations ---");
+    println!("\n  ═══ Basic B-Tree Operations ═══");
     let mut btree: BTree<i32, String> = BTree::new();
 
     // Insert values
@@ -332,7 +332,7 @@ Range queries work efficiently:
 ");
 
     // Demo 3: Performance comparison
-    println!("--- Performance Comparison ---\n");
+    println!("\n  ═══ Performance Comparison ═══\n");
 
     println!("Small dataset (1,000 items):");
     measure_operations(1_000);
@@ -367,7 +367,7 @@ Covering Index:
 ");
 
     // Demo 5: When indexes help/hurt
-    println!("--- When to Use Indexes ---");
+    println!("\n  ═══ When to Use Indexes ═══");
     println!("
 Good candidates for indexing:
   ✓ Primary keys (automatic)

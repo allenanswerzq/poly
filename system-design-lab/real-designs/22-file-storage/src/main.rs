@@ -332,7 +332,7 @@ fn main() {
     let service = SyncService::new();
 
     // Upload files
-    println!("--- Uploading Files ---");
+    println!("\n  ═══ Uploading Files ═══");
 
     let file1_data = b"Hello, World! This is my first file.".to_vec();
     let meta1 = service.upload("/documents/hello.txt", &file1_data);
@@ -375,7 +375,7 @@ fn main() {
     println!();
 
     // Download file
-    println!("--- Downloading ---");
+    println!("\n  ═══ Downloading ═══");
     let downloaded = service.fs.download("/documents/hello.txt").unwrap();
     println!(
         "Downloaded {} bytes: '{}'",
@@ -385,7 +385,7 @@ fn main() {
     println!();
 
     // File modification (versioning)
-    println!("--- File Versioning ---");
+    println!("\n  ═══ File Versioning ═══");
     let v1 = service.fs.get_metadata("/documents/hello.txt").unwrap().version;
     println!("Current version: {}", v1);
 
@@ -409,7 +409,7 @@ fn main() {
     println!();
 
     // Sync protocol
-    println!("--- Sync Protocol ---");
+    println!("\n  ═══ Sync Protocol ═══");
 
     // Client has cursor 0 (never synced)
     let (new_cursor, changes) = service.get_changes(0);

@@ -452,7 +452,7 @@ fn main() {
     println!("=== Metrics Monitoring System Demo ===\n");
 
     // Create metrics
-    println!("--- Creating Metrics ---");
+    println!("\n  ═══ Creating Metrics ═══");
 
     let http_requests = Counter::new("http_requests_total", HashMap::new());
     let active_connections = Gauge::new("active_connections", HashMap::new());
@@ -479,19 +479,19 @@ fn main() {
     }
 
     // Show metrics
-    println!("--- Metric Values ---");
+    println!("\n  ═══ Metric Values ═══");
     println!("http_requests_total: {}", http_requests.get());
     println!("active_connections: {:.0}", active_connections.get());
     println!();
 
-    println!("--- Histogram Percentiles ---");
+    println!("\n  ═══ Histogram Percentiles ═══");
     println!("request_duration p50: {:.3}s", request_duration.percentile(0.5));
     println!("request_duration p90: {:.3}s", request_duration.percentile(0.9));
     println!("request_duration p99: {:.3}s", request_duration.percentile(0.99));
     println!();
 
     // Alerting
-    println!("--- Alerting ---");
+    println!("\n  ═══ Alerting ═══");
     let alerts = AlertManager::new();
 
     alerts.add_rule(AlertRule {
@@ -524,7 +524,7 @@ fn main() {
     println!();
 
     // Downsampling demo
-    println!("--- Downsampling ---");
+    println!("\n  ═══ Downsampling ═══");
     let raw_data: Vec<(u64, f64)> = (0..100)
         .map(|i| (i * 1000, 100.0 + rng.gen_range(-10.0..10.0)))
         .collect();
@@ -540,7 +540,7 @@ fn main() {
     println!();
 
     // Time series query
-    println!("--- Time Series Query ---");
+    println!("\n  ═══ Time Series Query ═══");
     let ts = TimeSeries::new("test_metric", HashMap::new(), Duration::from_secs(60));
 
     for i in 0..100 {

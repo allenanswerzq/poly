@@ -312,7 +312,7 @@ fn main() {
     println!("=== Scaling Reads Pattern Demos ===\n");
 
     // Demo 1: Cache-Aside Pattern
-    println!("--- Pattern 1: Cache-Aside ---");
+    println!("\n  ═══ Pattern 1: Cache-Aside ═══");
     let db = Arc::new(Database::new(10)); // 10ms DB latency
     let cache = CacheAside::new(Arc::clone(&db), Duration::from_secs(5));
 
@@ -340,7 +340,7 @@ fn main() {
     println!();
 
     // Demo 2: Read Replicas
-    println!("--- Pattern 2: Read Replicas ---");
+    println!("\n  ═══ Pattern 2: Read Replicas ═══");
     let replica_set = ReplicaSet::new(3, 50); // 3 replicas, 50ms lag
 
     // Write to primary
@@ -367,7 +367,7 @@ fn main() {
     println!();
 
     // Demo 3: Multi-Layer Cache
-    println!("--- Pattern 3: Multi-Layer Cache ---");
+    println!("\n  ═══ Pattern 3: Multi-Layer Cache ═══");
     let db2 = Arc::new(Database::new(50)); // 50ms DB latency
     let multi_cache = MultiLayerCache::new(db2);
 

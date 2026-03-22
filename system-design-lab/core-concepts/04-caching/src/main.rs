@@ -296,7 +296,7 @@ fn main() {
     println!("=== Caching Implementations Demo ===\n");
 
     // Demo 1: Basic LRU Cache
-    println!("--- LRU Cache ---");
+    println!("\n  ═══ LRU Cache ═══");
     let mut lru = LruCache::new(3);
 
     lru.put("a", 1);
@@ -315,7 +315,7 @@ fn main() {
     println!("Cache size: {}\n", lru.len());
 
     // Demo 2: TTL LRU Cache
-    println!("--- TTL LRU Cache ---");
+    println!("\n  ═══ TTL LRU Cache ═══");
     let mut ttl_cache = TtlLruCache::new(10, Duration::from_millis(100));
 
     ttl_cache.put("session", "user123");
@@ -332,7 +332,7 @@ fn main() {
     println!("Stored long_lived with 60s TTL\n");
 
     // Demo 3: Concurrent Cache
-    println!("--- Concurrent Cache ---");
+    println!("\n  ═══ Concurrent Cache ═══");
     let cache = ConcurrentCache::new(1000);
 
     // Simulate concurrent access

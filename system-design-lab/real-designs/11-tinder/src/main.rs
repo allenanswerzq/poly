@@ -415,7 +415,7 @@ fn main() {
     let service = MatchService::new();
 
     // Create users
-    println!("--- Creating Users ---");
+    println!("\n  ═══ Creating Users ═══");
 
     let users = vec![
         UserProfile {
@@ -487,7 +487,7 @@ fn main() {
     println!();
 
     // Get recommendations for Alice
-    println!("--- Alice's Recommendations ---");
+    println!("\n  ═══ Alice's Recommendations ═══");
     let recs = service.get_recommendations("alice", 5);
     for (i, profile) in recs.iter().enumerate() {
         let distance = GeoPoint { lat: 40.7128, lon: -74.0060 }
@@ -504,7 +504,7 @@ fn main() {
     println!();
 
     // Swiping
-    println!("--- Swiping ---");
+    println!("\n  ═══ Swiping ═══");
 
     // Alice likes Bob
     let result = service.swipe("alice", "bob", true);
@@ -519,7 +519,7 @@ fn main() {
     println!("Alice ❌ Charlie\n");
 
     // Check matches
-    println!("--- Matches ---");
+    println!("\n  ═══ Matches ═══");
     let alice_matches = service.get_matches("alice");
     println!("Alice's matches: {}", alice_matches.len());
     for m in &alice_matches {

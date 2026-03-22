@@ -472,7 +472,7 @@ fn main() {
     let service = PaymentService::new();
 
     // Create accounts
-    println!("--- Creating Accounts ---");
+    println!("\n  ═══ Creating Accounts ═══");
     service.accounts.create_account("alice", 10000, "USD"); // $100.00
     service.accounts.create_account("bob", 5000, "USD");    // $50.00
     service.accounts.create_account("merchant", 0, "USD");
@@ -483,7 +483,7 @@ fn main() {
     println!();
 
     // Process payment
-    println!("--- Processing Payment ---");
+    println!("\n  ═══ Processing Payment ═══");
     let request = PaymentRequest {
         idempotency_key: "order_12345".to_string(),
         from_account: "alice".to_string(),
@@ -506,7 +506,7 @@ fn main() {
     println!();
 
     // Idempotency test
-    println!("--- Idempotency Test ---");
+    println!("\n  ═══ Idempotency Test ═══");
     println!("Retrying same payment (same idempotency key)...");
 
     match service.process(request.clone()) {
@@ -517,7 +517,7 @@ fn main() {
     println!();
 
     // Authorization hold and cancel
-    println!("--- Auth/Cancel Flow ---");
+    println!("\n  ═══ Auth/Cancel Flow ═══");
     let request2 = PaymentRequest {
         idempotency_key: "order_67890".to_string(),
         from_account: "bob".to_string(),
@@ -540,7 +540,7 @@ fn main() {
     println!();
 
     // Insufficient balance
-    println!("--- Insufficient Balance Test ---");
+    println!("\n  ═══ Insufficient Balance Test ═══");
     let request3 = PaymentRequest {
         idempotency_key: "order_big".to_string(),
         from_account: "bob".to_string(),
@@ -556,7 +556,7 @@ fn main() {
     println!();
 
     // Ledger
-    println!("--- Ledger Entries for Alice ---");
+    println!("\n  ═══ Ledger Entries for Alice ═══");
     let ledger = service.accounts.get_ledger("alice");
     for entry in ledger {
         let entry_type = match entry.entry_type {

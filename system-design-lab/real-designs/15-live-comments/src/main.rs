@@ -400,7 +400,7 @@ fn main() {
     let stream = service.create_stream("stream_001");
 
     // Simulate comments
-    println!("--- Posting Comments ---");
+    println!("\n  ═══ Posting Comments ═══");
 
     let comments = vec![
         ("user1", "This is awesome! 🔥"),

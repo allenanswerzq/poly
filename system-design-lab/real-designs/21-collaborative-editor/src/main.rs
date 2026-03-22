@@ -431,13 +431,13 @@ fn main() {
     let session = CollaborativeSession::new();
 
     // Users join
-    println!("--- Users Joining ---");
+    println!("\n  ═══ Users Joining ═══");
     session.join("alice", "Alice", "#ff0000");
     session.join("bob", "Bob", "#0000ff");
     println!("Alice and Bob joined the session\n");
 
     // Alice types first
-    println!("--- Alice Types ---");
+    println!("\n  ═══ Alice Types ═══");
     let op1 = Operation::Insert {
         position: 0,
         text: "Hello".to_string(),

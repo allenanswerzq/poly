@@ -496,7 +496,7 @@ fn main() -> Result<()> {
     let _ = fs::remove_dir_all(&temp_dir);  // Clean up any existing
 
     // Demo 1: Bloom Filter
-    println!("--- Bloom Filter Demo ---");
+    println!("\n  ═══ Bloom Filter Demo ═══");
     let mut bloom = BloomFilter::new(1000, 0.01);
 
     let keys = ["apple", "banana", "cherry", "date", "elderberry"];

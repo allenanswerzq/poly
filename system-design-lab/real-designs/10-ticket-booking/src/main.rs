@@ -442,7 +442,7 @@ fn main() {
     let service = BookingService::new();
 
     // Create event with seats
-    println!("--- Creating Event ---");
+    println!("\n  ═══ Creating Event ═══");
     let event = Event {
         id: "concert_001".to_string(),
         name: "Taylor Swift - Eras Tour".to_string(),
@@ -468,7 +468,7 @@ fn main() {
     println!("Created '{}' with 10 seats\n", event.name);
 
     // Show available seats
-    println!("--- Available Seats ---");
+    println!("\n  ═══ Available Seats ═══");
     let available = service.get_available("concert_001");
     println!("{} seats available:", available.len());
     for seat in &available[..3.min(available.len())] {
@@ -477,7 +477,7 @@ fn main() {
     println!();
 
     // Normal booking flow
-    println!("--- Normal Booking Flow ---");
+    println!("\n  ═══ Normal Booking Flow ═══");
     let booking = service
         .start_checkout(
             "alice",
@@ -500,7 +500,7 @@ fn main() {
     );
 
     // Try to book same seat (should fail)
-    println!("--- Conflict Handling ---");
+    println!("\n  ═══ Conflict Handling ═══");
     let result = service.start_checkout("bob", "concert_001", vec!["seat_1".to_string()]);
     match result {
         Ok(_) => println!("Bob got seat_1"),
@@ -514,7 +514,7 @@ fn main() {
     println!("Bob held seat_3 successfully ✓\n");
 
     // Flash sale simulation with queue
-    println!("--- Flash Sale Queue ---");
+    println!("\n  ═══ Flash Sale Queue ═══");
     println!("Many users trying to book at once...");
 
     let req1 = service.queue_booking("user1", "concert_001", 2);

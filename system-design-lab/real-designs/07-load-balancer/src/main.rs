@@ -340,7 +340,7 @@ fn main() {
     ];
 
     // Demo 1: Round Robin
-    println!("--- Round Robin ---");
+    println!("\n  ═══ Round Robin ═══");
     let lb = LoadBalancerService::new(Box::new(RoundRobin::new()));
     for server in &servers {
         lb.add_server(server.clone());
@@ -355,7 +355,7 @@ fn main() {
     println!("\n");
 
     // Demo 2: Weighted Round Robin
-    println!("--- Weighted Round Robin (server-2 has weight 2) ---");
+    println!("\n  ═══ Weighted Round Robin (server-2 has weight 2) ═══");
     let lb = LoadBalancerService::new(Box::new(WeightedRoundRobin::new()));
     for server in &servers {
         lb.add_server(server.clone());
@@ -370,7 +370,7 @@ fn main() {
     println!("\n");
 
     // Demo 3: IP Hash (sticky sessions)
-    println!("--- IP Hash (Sticky Sessions) ---");
+    println!("\n  ═══ IP Hash (Sticky Sessions) ═══");
     let lb = LoadBalancerService::new(Box::new(IpHash::new()));
     for server in &servers {
         lb.add_server(server.clone());
@@ -389,7 +389,7 @@ fn main() {
     println!();
 
     // Demo 4: Least Connections (shared for connection tracking)
-    println!("--- Least Connections ---");
+    println!("\n  ═══ Least Connections ═══");
     let lc = Arc::new(LeastConnections::new());
     let lb = LoadBalancerService::new(Box::new(LeastConnections::new()));
     for server in &servers {
@@ -412,7 +412,7 @@ fn main() {
     println!("\n");
 
     // Demo 5: Health Checks
-    println!("--- Health Check Simulation ---");
+    println!("\n  ═══ Health Check Simulation ═══");
     let lb = LoadBalancerService::new(Box::new(RoundRobin::new()));
     for server in &servers {
         lb.add_server(server.clone());

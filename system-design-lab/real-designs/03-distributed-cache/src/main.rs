@@ -366,7 +366,7 @@ fn main() {
     let cache = Arc::new(DistributedCache::new(2));
 
     // Add cache nodes
-    println!("--- Adding Cache Nodes ---");
+    println!("\n  ═══ Adding Cache Nodes ═══");
     cache.add_node("cache-node-1", 1000);
     cache.add_node("cache-node-2", 1000);
     cache.add_node("cache-node-3", 1000);

@@ -396,7 +396,7 @@ fn main() {
     let engine = QueryExecutor::new();
 
     // Index documents
-    println!("--- Indexing Documents ---");
+    println!("\n  ═══ Indexing Documents ═══");
     let docs = vec![
         Document {
             id: "doc1".to_string(),
@@ -442,7 +442,7 @@ fn main() {
     println!("Total: {} documents indexed\n", engine.index.documents.len());
 
     // Simple search
-    println!("--- Simple Search: 'rust' ---");
+    println!("\n  ═══ Simple Search: 'rust' ═══");
     let results = engine.search("rust", 10);
     for (i, result) in results.iter().enumerate() {
         println!(
@@ -456,7 +456,7 @@ fn main() {
     println!();
 
     // Multi-term search
-    println!("--- Multi-term Search: 'programming language' ---");
+    println!("\n  ═══ Multi-term Search: 'programming language' ═══");
     let results = engine.search("programming language", 10);
     for (i, result) in results.iter().enumerate() {
         println!(
@@ -469,7 +469,7 @@ fn main() {
     println!();
 
     // Boolean AND query
-    println!("--- Boolean AND: 'rust' AND 'python' ---");
+    println!("\n  ═══ Boolean AND: 'rust' AND 'python' ═══");
     let query = Query::And(
         Box::new(Query::Term("rust".to_string())),
         Box::new(Query::Term("python".to_string())),
@@ -479,7 +479,7 @@ fn main() {
     println!();
 
     // Boolean OR query
-    println!("--- Boolean OR: 'rust' OR 'javascript' ---");
+    println!("\n  ═══ Boolean OR: 'rust' OR 'javascript' ═══");
     let query = Query::Or(
         Box::new(Query::Term("rust".to_string())),
         Box::new(Query::Term("javascript".to_string())),
@@ -489,14 +489,14 @@ fn main() {
     println!();
 
     // Phrase query
-    println!("--- Phrase Query: \"programming language\" ---");
+    println!("\n  ═══ Phrase Query: \"programming language\" ═══");
     let query = Query::Phrase(vec!["programming".to_string(), "language".to_string()]);
     let doc_ids = engine.execute(&query);
     println!("  Docs with exact phrase: {:?}", doc_ids);
     println!();
 
     // Fuzzy matching
-    println!("--- Fuzzy Matching ---");
+    println!("\n  ═══ Fuzzy Matching ═══");
     let fuzzy_term = "progamming"; // Typo
     let matches = FuzzyMatcher::find_fuzzy_matches(&engine.index, fuzzy_term, 2);
     println!("  '{}' fuzzy matches: {:?}", fuzzy_term, matches);

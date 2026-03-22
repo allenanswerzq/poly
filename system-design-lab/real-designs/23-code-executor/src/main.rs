@@ -467,7 +467,7 @@ fn main() {
     let leaderboard = Leaderboard::new();
 
     // Submit solution
-    println!("--- Submitting Solution ---");
+    println!("\n  ═══ Submitting Solution ═══");
     let submission = Submission {
         id: 0,
         problem_id: "two-sum".to_string(),

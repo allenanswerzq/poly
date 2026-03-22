@@ -345,7 +345,7 @@ fn main() {
     let feed = FeedService::new();
 
     // Create users and follow relationships
-    println!("--- Setting up Social Graph ---");
+    println!("\n  ═══ Setting up Social Graph ═══");
 
     // Regular users follow each other
     feed.graph.follow("alice", "bob");
@@ -368,7 +368,7 @@ fn main() {
     );
 
     // Create posts
-    println!("--- Creating Posts ---");
+    println!("\n  ═══ Creating Posts ═══");
 
     let p1 = feed.create_post("bob", "Just had the best coffee! ☕");
     println!("Bob posted (fan-out to {} followers)", feed.graph.follower_count("bob"));
@@ -391,7 +391,7 @@ fn main() {
     println!();
 
     // Get Alice's feed (ranked)
-    println!("--- Alice's Ranked Feed ---");
+    println!("\n  ═══ Alice's Ranked Feed ═══");
     let alice_feed = feed.get_feed("alice", 10);
     for (i, item) in alice_feed.iter().enumerate() {
         println!(

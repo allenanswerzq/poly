@@ -359,7 +359,7 @@ fn main() {
     let service = AdClickService::new();
 
     // Generate click events
-    println!("--- Processing Click Events ---");
+    println!("\n  ═══ Processing Click Events ═══");
 
     let campaigns = vec!["camp_summer", "camp_holiday", "camp_flash"];
     let countries = vec!["US", "UK", "DE", "FR", "JP"];
@@ -398,7 +398,7 @@ fn main() {
     println!();
 
     // Real-time stats
-    println!("--- Real-time Stats (Speed Layer) ---");
+    println!("\n  ═══ Real-time Stats (Speed Layer) ═══");
     for campaign in &campaigns {
         let stats = service.get_realtime_stats(campaign, Duration::from_secs(60));
         if stats.total_clicks > 0 {
@@ -414,7 +414,7 @@ fn main() {
     println!();
 
     // Batch processing
-    println!("--- Batch Processing (MapReduce) ---");
+    println!("\n  ═══ Batch Processing (MapReduce) ═══");
     let batch_results = service.run_batch_job();
     println!("MapReduce results:");
     let mut sorted: Vec<_> = batch_results.iter().collect();
@@ -425,7 +425,7 @@ fn main() {
     println!();
 
     // Demonstrate windowed aggregation
-    println!("--- Windowed Aggregation ---");
+    println!("\n  ═══ Windowed Aggregation ═══");
     let window = AggregationWindow::new(Duration::from_secs(60), 6);
 
     // Add some events

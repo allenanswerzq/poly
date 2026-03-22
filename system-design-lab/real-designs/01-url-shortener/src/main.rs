@@ -308,7 +308,7 @@ fn main() {
     println!("=== URL Shortener Demo ===\n");
 
     // Demo 1: Basic URL shortening with different strategies
-    println!("--- ID Generation Strategies ---\n");
+    println!("\n  ═══ ID Generation Strategies ═══\n");
 
     // Hash-based
     let hash_id = generate_hash_id("https://example.com/very/long/url/path", 7);

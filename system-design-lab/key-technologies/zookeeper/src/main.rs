@@ -415,7 +415,7 @@ fn main() {
     let zk = MiniZooKeeper::new();
 
     // Demo 1: Basic ZNode operations
-    println!("--- Basic ZNode Operations ---");
+    println!("\n  ═══ Basic ZNode Operations ═══");
 
     zk.create("/myapp", vec![], ZNodeType::Persistent, None).ok();
     zk.create("/myapp/config", b"version=1.0".to_vec(), ZNodeType::Persistent, None).ok();

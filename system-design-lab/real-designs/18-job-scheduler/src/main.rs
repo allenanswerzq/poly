@@ -437,7 +437,7 @@ async fn main() {
     let scheduler = Arc::new(JobScheduler::new(4));
 
     // Submit jobs with different priorities
-    println!("--- Submitting Jobs ---");
+    println!("\n  ═══ Submitting Jobs ═══");
 
     let jobs = vec![
         Job {
@@ -482,7 +482,7 @@ async fn main() {
     println!();
 
     // Submit DAG with dependencies
-    println!("--- Submitting DAG (A -> B, A -> C, B+C -> D) ---");
+    println!("\n  ═══ Submitting DAG (A -> B, A -> C, B+C -> D) ═══");
 
     let job_a = Job {
         id: "dag_a".to_string(),
@@ -543,7 +543,7 @@ async fn main() {
     println!();
 
     // Process jobs
-    println!("--- Processing Jobs ---");
+    println!("\n  ═══ Processing Jobs ═══");
 
     for _ in 0..20 {
         if let Some(job) = scheduler.get_next_job() {

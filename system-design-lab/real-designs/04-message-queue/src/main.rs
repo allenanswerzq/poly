@@ -398,7 +398,7 @@ fn main() {
     let broker = Arc::new(Broker::new());
 
     // Create topic with 3 partitions
-    println!("--- Creating Topic ---");
+    println!("\n  ═══ Creating Topic ═══");
     broker.create_topic("orders", 3);
     println!("Created topic 'orders' with 3 partitions\n");
 
@@ -406,7 +406,7 @@ fn main() {
     let producer = Producer::new(Arc::clone(&broker));
 
     // Send messages with keys (for partitioning)
-    println!("--- Producing Messages ---");
+    println!("\n  ═══ Producing Messages ═══");
     let orders = vec![
         ("order-1", "customer-a", r#"{"item": "laptop", "price": 999}"#),
         ("order-2", "customer-b", r#"{"item": "phone", "price": 599}"#),

@@ -358,7 +358,7 @@ fn main() {
     println!("=== Real-Time Updates Pattern Demos ===\n");
 
     // Demo 1: Pub/Sub
-    println!("--- Pattern 1: Pub/Sub Channels ---");
+    println!("\n  ═══ Pattern 1: Pub/Sub Channels ═══");
     let pubsub = PubSub::new();
 
     // Create subscribers
@@ -392,7 +392,7 @@ fn main() {
     );
 
     // Demo 2: Presence System
-    println!("--- Pattern 2: Presence System ---");
+    println!("\n  ═══ Pattern 2: Presence System ═══");
     let presence = PresenceSystem::new(Duration::from_secs(30));
 
     presence.set_online("alice");
@@ -414,7 +414,7 @@ fn main() {
     println!("Online users: {}\n", presence.online_count());
 
     // Demo 3: Ordered Message Delivery
-    println!("--- Pattern 3: Ordered Message Delivery ---");
+    println!("\n  ═══ Pattern 3: Ordered Message Delivery ═══");
     let ordered = OrderedChannel::new();
 
     // Simulate out-of-order arrival
@@ -440,7 +440,7 @@ fn main() {
     println!();
 
     // Demo 4: Fan-Out Broadcasting
-    println!("--- Pattern 4: Fan-Out Broadcasting ---");
+    println!("\n  ═══ Pattern 4: Fan-Out Broadcasting ═══");
     let broadcaster = Broadcaster::new();
 
     // Create subscribers (simulated - in real code these would be async)

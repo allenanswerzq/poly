@@ -346,7 +346,7 @@ fn main() {
     println!("=== Top-K / Trending System Demo ===\n");
 
     // Demo 1: Count-Min Sketch
-    println!("--- Count-Min Sketch ---");
+    println!("\n  ═══ Count-Min Sketch ═══");
     let sketch = CountMinSketch::new(1000, 5);
 
     // Simulate views
@@ -375,7 +375,7 @@ fn main() {
     println!();
 
     // Demo 2: Top-K Tracker
-    println!("--- Top-K Tracker ---");
+    println!("\n  ═══ Top-K Tracker ═══");
     let topk = TopKTracker::new(5, 1000, 5);
 
     // Simulate video views
@@ -402,7 +402,7 @@ fn main() {
     println!();
 
     // Demo 3: Time-Windowed Trending
-    println!("--- Time-Windowed Trending (Simulated) ---");
+    println!("\n  ═══ Time-Windowed Trending (Simulated) ═══");
     let window = TimeWindow::new(Duration::from_secs(60), 6);
 
     // Simulate events in window
@@ -423,7 +423,7 @@ fn main() {
     println!();
 
     // Demo 4: Trending with Velocity
-    println!("--- Trending with Velocity ---");
+    println!("\n  ═══ Trending with Velocity ═══");
     let trending = TrendingWithVelocity::new();
 
     // Simulate baseline (historical)
@@ -452,7 +452,7 @@ fn main() {
     println!();
 
     // Demo 5: Heavy Hitters
-    println!("--- Heavy Hitters Detection ---");
+    println!("\n  ═══ Heavy Hitters Detection ═══");
     let hh = HeavyHitters::new(10);
 
     let mut total = 0u64;

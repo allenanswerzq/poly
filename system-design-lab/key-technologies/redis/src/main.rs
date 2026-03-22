@@ -382,7 +382,7 @@ fn main() {
     let redis = MiniRedis::new();
 
     // String commands
-    println!("--- String Commands ---");
+    println!("\n  ═══ String Commands ═══");
     redis.set("name", "Alice", None);
     println!("SET name 'Alice': OK");
     println!("GET name: {:?}", redis.get("name"));

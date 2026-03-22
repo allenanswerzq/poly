@@ -314,7 +314,7 @@ fn main() {
     println!("=== Handling Contention Pattern Demos ===\n");
 
     // Demo 1: Optimistic Locking
-    println!("--- Pattern 1: Optimistic Locking ---");
+    println!("\n  ═══ Pattern 1: Optimistic Locking ═══");
     let store = Arc::new(OptimisticStore::new());
 
     // Initialize
@@ -354,7 +354,7 @@ fn main() {
     println!();
 
     // Demo 2: Atomic Operations
-    println!("--- Pattern 2: Atomic Operations ---");
+    println!("\n  ═══ Pattern 2: Atomic Operations ═══");
     let counter = Arc::new(AtomicCounter::new());
 
     // Initialize inventory
@@ -383,7 +383,7 @@ fn main() {
     println!("No overselling occurred!\n");
 
     // Demo 3: Queue-Based Serialization
-    println!("--- Pattern 3: Queue-Based Serialization ---");
+    println!("\n  ═══ Pattern 3: Queue-Based Serialization ═══");
     let processor = SerializedProcessor::new();
 
     // Submit operations
@@ -403,7 +403,7 @@ fn main() {
     println!("(Expected: 25*10 - 25*5 = 125)\n");
 
     // Demo 4: Hot Key Mitigation
-    println!("--- Pattern 4: Hot Key Mitigation ---");
+    println!("\n  ═══ Pattern 4: Hot Key Mitigation ═══");
     let mitigator = Arc::new(HotKeyMitigator::new(8)); // 8 shards
 
     // Simulate high concurrent access to hot key
@@ -427,7 +427,7 @@ fn main() {
     println!();
 
     // Demo 5: Compare conflict rates
-    println!("--- Comparison: Conflict Rates ---");
+    println!("\n  ═══ Comparison: Conflict Rates ═══");
 
     // High contention scenario
     let store_high = Arc::new(OptimisticStore::new());

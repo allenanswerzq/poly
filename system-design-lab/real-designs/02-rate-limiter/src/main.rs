@@ -361,7 +361,7 @@ fn main() {
     println!("=== Rate Limiter Implementations Demo ===\n");
 
     // Demo 1: Token Bucket
-    println!("--- Token Bucket (10 tokens, 2/sec refill) ---");
+    println!("\n  ═══ Token Bucket (10 tokens, 2/sec refill) ═══");
     let mut bucket = TokenBucket::new(10.0, 2.0);
 
     println!("Initial tokens: {:.1}", bucket.available_tokens());
@@ -378,7 +378,7 @@ fn main() {
     println!("Tokens after wait: {:.1}\n", bucket.available_tokens());
 
     // Demo 2: Sliding Window Counter
-    println!("--- Sliding Window Counter (5 requests per 100ms) ---");
+    println!("\n  ═══ Sliding Window Counter (5 requests per 100ms) ═══");
     let sliding = SlidingWindowCounter::new(Duration::from_millis(100), 5);
 
     for i in 1..=8 {
@@ -395,7 +395,7 @@ fn main() {
              if allowed { "✓" } else { "✗" }, sliding.get_remaining("user-1"));
 
     // Demo 3: Different clients
-    println!("--- Distributed Rate Limiting (per-client) ---");
+    println!("\n  ═══ Distributed Rate Limiting (per-client) ═══");
     let distributed = DistributedTokenBucket::new(3.0, 1.0);
 
     println!("Client A requests:");

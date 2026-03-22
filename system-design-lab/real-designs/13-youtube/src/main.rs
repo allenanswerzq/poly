@@ -449,7 +449,7 @@ fn main() {
     let service = VideoService::new();
 
     // Upload videos
-    println!("--- Uploading Videos ---");
+    println!("\n  ═══ Uploading Videos ═══");
 
     let vid1 = service.upload(
         "How to build distributed systems",

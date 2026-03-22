@@ -121,6 +121,7 @@ async fn handle_users() -> axum::Json<serde_json::Value> {
 /// Demonstrates HTTP/1.1 keep-alive with a real HTTP client (reqwest).
 /// reqwest automatically reuses TCP connections via its connection pool.
 fn demo_http11_keepalive(base_url: &str) {
+    println!("\n  ═══ demo_http11_keepalive ═══\n");
     // reqwest::blocking::Client has built-in connection pooling.
     // It reuses TCP connections via keep-alive automatically — just like browsers.
     let client = reqwest::blocking::Client::new();
@@ -183,60 +184,158 @@ fn demo_http11_keepalive(base_url: &str) {
     println!("  Try: curl -v {}/ — look for 'Connection: keep-alive' in response\n", base_url);
 }
 
-/// Demonstrates HTTP/1.1 HOL blocking: /slow blocks subsequent responses.
+/// Demonstrates real HTTP/1.1 vs HTTP/2 head-of-line blocking.
+/// Uses actual protocol version pinning — you'll see HTTP/1.1 and HTTP/2.0 in output.
 fn demo_http11_hol_blocking(base_url: &str) {
-    let client = reqwest::blocking::Client::new();
+    println!("\n  ═══ demo_http11_hol_blocking ═══\n");
+    // ── HTTP/1.1: sequential, head-of-line blocking ──────────────────────
+    // .http1_only() forces reqwest to use HTTP/1.1 — no upgrade to HTTP/2.
+    // On HTTP/1.1, you MUST wait for each response before sending the next request.
+    let http1_client = reqwest::blocking::ClientBuilder::new()
+        .http1_only()
+        .build()
+        .unwrap();
 
-    println!("  HEAD-OF-LINE BLOCKING:");
-    println!("  On a single HTTP/1.1 connection, responses must come in order.");
-    println!("  /slow (500ms) blocks /health even though /health is instant.\n");
+    println!("  HTTP/1.1 — sequential on ONE TCP connection (head-of-line blocking):");
+    println!("  One reqwest::Client = one connection pool = reuses same TCP socket.");
+    println!("  Proof: 2nd request is faster (no TCP handshake needed).\n");
+    println!("  Order 1: /slow then /health:\n");
 
-    // Sequential requests — this is what happens on a single HTTP/1.1 connection
-    println!("  Sequential (HTTP/1.1 behavior):");
     let start = Instant::now();
     for path in &["/slow", "/health"] {
         let url = format!("{}{}", base_url, path);
         let req_start = Instant::now();
-        let resp = client.get(&url).send().unwrap();
+        let resp = http1_client.get(&url).send().unwrap();
         println!(
-            "    GET {:12} -> {} ({:?})",
+            "    GET {:12} -> {} version={:?} ({:?})",
             path,
             resp.status(),
+            resp.version(),
             req_start.elapsed()
         );
     }
-    println!("  Sequential total: {:?}\n", start.elapsed());
+    println!("  HTTP/1.1 total: {:?}", start.elapsed());
+    println!("  ^ /health had to wait for /slow — both on same TCP connection\n");
 
-    // Parallel requests — simulating what HTTP/2 multiplexing achieves
-    // (HTTP/2 does this on ONE connection; here we use two connections)
-    println!("  Parallel (what HTTP/2 multiplexing achieves on one connection):");
+    println!("  Order 2: /health then /slow:\n");
+
+    let start = Instant::now();
+    for path in &["/health", "/slow"] {
+        let url = format!("{}{}", base_url, path);
+        let req_start = Instant::now();
+        let resp = http1_client.get(&url).send().unwrap();
+        println!(
+            "    GET {:12} -> {} version={:?} ({:?})",
+            path,
+            resp.status(),
+            resp.version(),
+            req_start.elapsed()
+        );
+    }
+    println!("  HTTP/1.1 total: {:?}", start.elapsed());
+    println!("  ^ Still ~500ms total — order doesn't matter, it's always sequential.\n");
+
+    // ── HTTP/1.1 with MULTIPLE TCP connections (like a browser) ──────────
+    // Browsers open 6 parallel TCP connections per domain to work around HOL blocking.
+    // We simulate this with separate threads, each with its own reqwest::Client.
+    // Each Client = its own connection pool = its own TCP socket.
+    println!("  HTTP/1.1 — MULTIPLE TCP connections (like a browser with 6 connections):");
+    println!("  Each thread gets its own reqwest::Client = its own TCP socket.");
+    println!("  /slow and /health run on SEPARATE connections, so they don't block.\n");
+
     let start = Instant::now();
     let base1 = base_url.to_string();
     let base2 = base_url.to_string();
+
+    // Thread 1: its own Client → its own TCP connection
     let h1 = thread::spawn(move || {
-        let c = reqwest::blocking::Client::new();
+        let client = reqwest::blocking::ClientBuilder::new()
+            .http1_only()
+            .build()
+            .unwrap();
         let t = Instant::now();
-        let r = c.get(format!("{}/slow", base1)).send().unwrap();
-        (r.status().to_string(), t.elapsed())
+        let r = client.get(format!("{}/slow", base1)).send().unwrap();
+        (r.status().to_string(), r.version(), t.elapsed())
     });
+
+    // Thread 2: its own Client → its own TCP connection
     let h2 = thread::spawn(move || {
-        let c = reqwest::blocking::Client::new();
+        let client = reqwest::blocking::ClientBuilder::new()
+            .http1_only()
+            .build()
+            .unwrap();
         let t = Instant::now();
-        let r = c.get(format!("{}/health", base2)).send().unwrap();
-        (r.status().to_string(), t.elapsed())
+        let r = client.get(format!("{}/health", base2)).send().unwrap();
+        (r.status().to_string(), r.version(), t.elapsed())
     });
-    let (s1, d1) = h1.join().unwrap();
-    let (s2, d2) = h2.join().unwrap();
-    println!("    GET /slow   -> {} ({:?})", s1, d1);
-    println!("    GET /health -> {} ({:?})", s2, d2);
+
+    let (s1, v1, d1) = h1.join().unwrap();
+    let (s2, v2, d2) = h2.join().unwrap();
+    println!("    GET /slow        -> {} version={:?} ({:?})", s1, v1, d1);
+    println!("    GET /health      -> {} version={:?} ({:?})", s2, v2, d2);
+    println!("  HTTP/1.1 multi-conn total: {:?}", start.elapsed());
+    println!("  ^ /health didn't wait! But we needed 2 TCP connections to do it.");
+    println!("  This is the browser workaround: 6 connections × sequential = ~6 parallel.\n");
+
+    // ── HTTP/2: multiplexed, no head-of-line blocking ────────────────────
+    // .http2_prior_knowledge() tells reqwest to speak HTTP/2 directly (h2c).
+    // On HTTP/2, multiple requests fly on ONE TCP connection simultaneously.
+    // We use async reqwest + tokio::join! to fire both requests at the same time.
+    println!("  HTTP/2 — multiplexed (no head-of-line blocking):");
+    println!("  Client configured with: reqwest::Client::builder().http2_prior_knowledge()");
+    println!("  Sending /slow AND /health CONCURRENTLY on ONE connection:\n");
+
+    let base_url_owned = base_url.to_string();
+    let start = Instant::now();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (slow_result, health_result) = rt.block_on(async {
+        // Same the same http2_client instance for both requests — they share ONE TCP connection with multiplexing.
+        let http2_client = reqwest::ClientBuilder::new()
+            .http2_prior_knowledge() // Speak HTTP/2 directly, no TLS needed
+            .build()
+            .unwrap();
+
+        let slow_url = format!("{}/slow", base_url_owned);
+        let health_url = format!("{}/health", base_url_owned);
+
+        // tokio::join! sends both requests concurrently on the SAME HTTP/2 connection.
+        // This is real multiplexing — both are in-flight simultaneously as separate streams.
+        let slow_start = Instant::now();
+        let health_start = Instant::now();
+
+        tokio::join!(
+            async {
+                let resp = http2_client.get(&slow_url).send().await.unwrap();
+                (resp.status(), resp.version(), slow_start.elapsed())
+            },
+            async {
+                let resp = http2_client.get(&health_url).send().await.unwrap();
+                (resp.status(), resp.version(), health_start.elapsed())
+            }
+        )
+    });
+
     println!(
-        "  Parallel total: {:?} — /health didn't wait for /slow!\n",
-        start.elapsed()
+        "    GET /slow        -> {} version={:?} ({:?})",
+        slow_result.0, slow_result.1, slow_result.2
     );
+    println!(
+        "    GET /health      -> {} version={:?} ({:?})",
+        health_result.0, health_result.1, health_result.2
+    );
+    println!("  HTTP/2 total: {:?}", start.elapsed());
+    println!("  ^ /health returned instantly — didn't wait for /slow!\n");
+
+    println!("  COMPARISON:");
+    println!("  HTTP/1.1: /slow(500ms) → /health(1ms) = ~501ms total (sequential)");
+    println!("  HTTP/2:   /slow(500ms) + /health(1ms) = ~500ms total (multiplexed)");
+    println!("  The {:?} format shows the ACTUAL protocol version from the wire.\n",
+        "version=HTTP/2.0");
 }
 
 // =============================================================================
-// 3. HTTP/2 Concepts — Binary Framing, Streams, Multiplexing
+// 3. HTTP/2 — Real Multiplexing Demo
 // =============================================================================
 //
 // HTTP/2 key improvements over HTTP/1.1:
@@ -246,184 +345,107 @@ fn demo_http11_hol_blocking(base_url: &str) {
 // - Server push
 // - Stream prioritization
 //
-// We implement a simplified binary frame format to show these concepts.
+// Instead of simulating frames, we fire REAL HTTP/2 requests against our
+// axum server and prove multiplexing with timing.
 
-/// HTTP/2 frame types (simplified subset)
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-enum H2FrameType {
-    Data = 0x0,
-    Headers = 0x1,
-    Settings = 0x4,
-    Ping = 0x6,
-    GoAway = 0x7,
-    WindowUpdate = 0x8,
-}
+/// Fire 10 concurrent HTTP/2 requests on ONE connection and compare with HTTP/1.1.
+/// Uses the same axum server already running from Demo 2.
+fn demo_http2_multiplexing(base_url: &str) {
+    println!("\n  ═══ demo_http2_multiplexing ═══\n");
 
-impl H2FrameType {
-    fn from_byte(b: u8) -> Option<Self> {
-        match b {
-            0x0 => Some(Self::Data),
-            0x1 => Some(Self::Headers),
-            0x4 => Some(Self::Settings),
-            0x6 => Some(Self::Ping),
-            0x7 => Some(Self::GoAway),
-            0x8 => Some(Self::WindowUpdate),
-            _ => None,
-        }
-    }
-}
-
-/// HTTP/2 frame (simplified)
-/// Real format: 9-byte header + payload
-///   Length (3 bytes) | Type (1) | Flags (1) | Stream ID (4) | Payload
-#[derive(Debug)]
-struct H2Frame {
-    frame_type: H2FrameType,
-    flags: u8,
-    stream_id: u32,
-    payload: Vec<u8>,
-}
-
-impl H2Frame {
-    fn new(frame_type: H2FrameType, stream_id: u32, payload: Vec<u8>) -> Self {
-        Self {
-            frame_type,
-            flags: 0,
-            stream_id,
-            payload,
-        }
-    }
-
-    /// Encode frame into the HTTP/2 binary wire format
-    fn encode(&self) -> Vec<u8> {
-        let len = self.payload.len();
-        let mut buf = Vec::with_capacity(9 + len);
-
-        // Length: 3 bytes big-endian
-        buf.push(((len >> 16) & 0xFF) as u8);
-        buf.push(((len >> 8) & 0xFF) as u8);
-        buf.push((len & 0xFF) as u8);
-
-        // Type: 1 byte
-        buf.push(self.frame_type as u8);
-
-        // Flags: 1 byte
-        buf.push(self.flags);
-
-        // Stream ID: 4 bytes big-endian (bit 0 is reserved)
-        buf.push(((self.stream_id >> 24) & 0x7F) as u8);
-        buf.push(((self.stream_id >> 16) & 0xFF) as u8);
-        buf.push(((self.stream_id >> 8) & 0xFF) as u8);
-        buf.push((self.stream_id & 0xFF) as u8);
-
-        // Payload
-        buf.extend_from_slice(&self.payload);
-        buf
-    }
-
-    /// Decode a frame from bytes
-    fn decode(data: &[u8]) -> Option<(Self, usize)> {
-        if data.len() < 9 {
-            return None;
-        }
-
-        let len = ((data[0] as usize) << 16) | ((data[1] as usize) << 8) | (data[2] as usize);
-        let frame_type = H2FrameType::from_byte(data[3])?;
-        let flags = data[4];
-        let stream_id = ((data[5] as u32 & 0x7F) << 24)
-            | ((data[6] as u32) << 16)
-            | ((data[7] as u32) << 8)
-            | (data[8] as u32);
-
-        if data.len() < 9 + len {
-            return None;
-        }
-
-        let payload = data[9..9 + len].to_vec();
-        Some((
-            Self {
-                frame_type,
-                flags,
-                stream_id,
-                payload,
-            },
-            9 + len,
-        ))
-    }
-}
-
-/// Demonstrate HTTP/2 binary framing and stream multiplexing
-fn demo_http2_framing() {
-    println!("  Binary frame encoding (9-byte header + payload):");
-    println!("  ┌─────────────────────────────────────────────┐");
-    println!("  │ Length (3B) │ Type (1B) │ Flags (1B) │ R+Stream ID (4B) │ Payload │");
-    println!("  └─────────────────────────────────────────────┘\n");
-
-    // Create frames on different streams to show multiplexing
-    let frames = vec![
-        H2Frame::new(
-            H2FrameType::Headers,
-            1,
-            b"GET / HTTP/2 (compressed headers go here)".to_vec(),
-        ),
-        H2Frame::new(
-            H2FrameType::Headers,
-            3,
-            b"GET /api HTTP/2 (stream 3)".to_vec(),
-        ),
-        // Data frames can be interleaved across streams!
-        H2Frame::new(
-            H2FrameType::Data,
-            1,
-            b"{\"page\":\"home\"}".to_vec(),
-        ),
-        H2Frame::new(
-            H2FrameType::Data,
-            3,
-            b"{\"api\":\"data\"}".to_vec(),
-        ),
-        H2Frame::new(H2FrameType::Ping, 0, vec![0; 8]),
+    // Paths to request — mix of fast and slow endpoints
+    let paths = vec![
+        "/", "/health", "/api/users", "/slow", "/",
+        "/health", "/api/users", "/slow", "/health", "/",
     ];
 
-    for frame in &frames {
-        let encoded = frame.encode();
-        let decoded = H2Frame::decode(&encoded);
+    // ── HTTP/1.1: sequential, one at a time ──────────────────────────────
+    println!("  HTTP/1.1 — 10 requests SEQUENTIAL (one connection):\n");
+    let http1_client = reqwest::blocking::ClientBuilder::new()
+        .http1_only()
+        .build()
+        .unwrap();
 
+    let start = Instant::now();
+    for (i, path) in paths.iter().enumerate() {
+        let url = format!("{}{}", base_url, path);
+        let req_start = Instant::now();
+        let resp = http1_client.get(&url).send().unwrap();
         println!(
-            "    Stream {} | {:?} | payload {} bytes | wire: {} bytes",
-            frame.stream_id,
-            frame.frame_type,
-            frame.payload.len(),
-            encoded.len()
+            "    req {:2} GET {:12} -> {} {:?} ({:?})",
+            i + 1,
+            path,
+            resp.status(),
+            resp.version(),
+            req_start.elapsed()
         );
-
-        // Verify roundtrip
-        if let Some((decoded_frame, consumed)) = decoded {
-            assert_eq!(consumed, encoded.len());
-            assert_eq!(decoded_frame.stream_id, frame.stream_id);
-            assert_eq!(decoded_frame.payload, frame.payload);
-        }
     }
+    let http1_total = start.elapsed();
+    println!("  HTTP/1.1 total: {:?} (sequential — each waits for previous)\n", http1_total);
 
-    println!("\n  KEY INSIGHT: Streams 1 & 3 are multiplexed on ONE connection.");
-    println!("  Their frames are interleaved — no head-of-line blocking at HTTP level!");
-    println!("  (TCP-level HOL blocking still exists, which HTTP/3 solves)\n");
+    // ── HTTP/2: all 10 concurrent on ONE connection ──────────────────────
+    println!("  HTTP/2 — 10 requests CONCURRENT (one multiplexed connection):\n");
 
-    // Show multiplexing timeline
-    println!("  HTTP/1.1 (sequential):");
-    println!("    |---req1---|---resp1---|---req2---|---resp2---|");
+    let base_url_owned = base_url.to_string();
+    let paths_owned = paths.clone();
+    let start = Instant::now();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let results = rt.block_on(async {
+        let http2_client = reqwest::ClientBuilder::new()
+            .http2_prior_knowledge()
+            .build()
+            .unwrap();
+
+        // Spawn all 10 requests AT ONCE — they'll be multiplexed as separate
+        // HTTP/2 streams on the SAME TCP connection.
+        let mut handles = Vec::new();
+        for (i, path) in paths_owned.iter().enumerate() {
+            let client = http2_client.clone();
+            let url = format!("{}{}", base_url_owned, path);
+            let path = path.to_string();
+            handles.push(tokio::spawn(async move {
+                let req_start = Instant::now();
+                let resp = client.get(&url).send().await.unwrap();
+                (i + 1, path, resp.status(), resp.version(), req_start.elapsed())
+            }));
+        }
+
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(handle.await.unwrap());
+        }
+        results.sort_by_key(|r| r.0); // Sort by request number
+        results
+    });
+
+    for (i, path, status, version, elapsed) in &results {
+        println!(
+            "    req {:2} GET {:12} -> {} {:?} ({:?})",
+            i, path, status, version, elapsed
+        );
+    }
+    let http2_total = start.elapsed();
+    println!("  HTTP/2 total: {:?} (all 10 flew concurrently!)\n", http2_total);
+
+    // ── Summary ──────────────────────────────────────────────────────────
+    let speedup = http1_total.as_secs_f64() / http2_total.as_secs_f64();
+    println!("  RESULTS:");
+    println!("  HTTP/1.1: {:?} (10 requests sequential on 1 connection)", http1_total);
+    println!("  HTTP/2:   {:?} (10 requests multiplexed on 1 connection)", http2_total);
+    println!("  Speedup:  {:.1}x faster with HTTP/2 multiplexing", speedup);
     println!();
-    println!("  HTTP/2 (multiplexed streams):");
-    println!("    |--req1--|--req2--|");
-    println!("    |--resp1-chunk--|--resp2-chunk--|--resp1-chunk--|");
+    println!("  WHY? HTTP/1.1 has 2× /slow (500ms each) = 1000ms minimum.");
+    println!("  HTTP/2 runs both /slow requests in parallel = 500ms for both.");
+    println!("  All fast requests also overlap with the slow ones.");
     println!();
-
-    // HPACK header compression concept
-    println!("  HPACK Header Compression:");
-    println!("  Static table has 61 pre-defined headers (e.g., :method GET = index 2)");
-    println!("  Dynamic table caches previously seen headers");
-    println!("  Example: ':method: GET' → just send index byte 0x82 (1 byte vs 11 bytes)");
+    println!("  Binary framing format (what HTTP/2 uses on the wire):");
+    println!("  ┌──────────┬────────┬───────┬────────────┬─────────┐");
+    println!("  │ Length 3B│Type 1B │Flags 1B│Stream ID 4B│ Payload │");
+    println!("  └──────────┴────────┴───────┴────────────┴─────────┘");
+    println!("  Each request gets its own Stream ID (1, 3, 5, 7...).");
+    println!("  Frames from different streams are interleaved on the wire.");
+    println!("  HPACK compresses headers: ':method GET' = 1 byte (index 0x82).");
     println!();
 }
 
@@ -1166,9 +1188,9 @@ fn main() {
     demo_http11_keepalive(&base_url);
     demo_http11_hol_blocking(&base_url);
 
-    // ── Demo 3: HTTP/2 Binary Framing ────────────────────────────────────
-    println!("━━━ 3. HTTP/2 — Binary Framing & Multiplexing ━━━");
-    demo_http2_framing();
+    // ── Demo 3: HTTP/2 Real Multiplexing ─────────────────────────────────
+    println!("━━━ 3. HTTP/2 — Real Multiplexing (10 concurrent requests) ━━━");
+    demo_http2_multiplexing(&base_url);
 
     // ── Demo 4: HTTP/3 / QUIC ────────────────────────────────────────────
     println!("━━━ 4. HTTP/3 / QUIC — UDP-Based Transport ━━━");

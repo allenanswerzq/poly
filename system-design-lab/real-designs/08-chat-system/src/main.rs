@@ -358,13 +358,13 @@ async fn main() {
     let chat = Arc::new(ChatService::new());
 
     // Simulate users connecting
-    println!("--- Users Connecting ---");
+    println!("\n  ═══ Users Connecting ═══");
     let mut alice_rx = chat.presence.connect("alice");
     let mut bob_rx = chat.presence.connect("bob");
     println!("Alice and Bob are online\n");
 
     // 1:1 Chat
-    println!("--- 1:1 Messaging ---");
+    println!("\n  ═══ 1:1 Messaging ═══");
     let msg1 = chat.send_message("alice", "bob", "Hey Bob!");
     println!("Alice -> Bob: '{}' (status: {:?})", msg1.content, msg1.status);
 
@@ -382,7 +382,7 @@ async fn main() {
     }
 
     // Group Chat
-    println!("--- Group Chat ---");
+    println!("\n  ═══ Group Chat ═══");
     let _charlie_rx = chat.presence.connect("charlie");
     let group_id = chat.groups.create("Friends", vec![
         "alice".to_string(),

@@ -171,6 +171,59 @@ This tells the client: "I also speak HTTP/3 on UDP port 443." The client can the
 
 The key insight: **the client always proposes, the server decides**. And there's always a fallback — if the server doesn't support a newer version, the connection works at the older version. This is why HTTP versions are backward-compatible and the internet didn't break when HTTP/2 and HTTP/3 rolled out.
 
+## Head-of-Line Blocking — What It Actually Means
+
+A common misconception: "HTTP/1.1 HOL blocking means 1000 requests wait for the slowest one." **That's not how it works.** HOL blocking is **per-connection**, not per-client.
+
+### HTTP/1.1: Sequential Per Connection
+
+On a **single TCP connection**, requests are strictly sequential:
+
+```
+Connection 1:  req1 → resp1 → req2 → resp2 → req3 → resp3
+```
+
+If `req1` takes 500ms (e.g., a slow database query), `req2` and `req3` are stuck waiting **on that connection**. This is head-of-line blocking.
+
+But the client can open **multiple TCP connections** in parallel. Browsers open 6 connections per domain by default:
+
+```
+Connection 1: req1(slow) ─────────── resp1 → req7 → resp7 → ...
+Connection 2: req2 → resp2 → req8 → resp8 → ...
+Connection 3: req3 → resp3 → req9 → resp9 → ...
+Connection 4: req4 → resp4 → req10 → resp10 → ...
+Connection 5: req5 → resp5 → req11 → resp11 → ...
+Connection 6: req6 → resp6 → req12 → resp12 → ...
+```
+
+If `req1` on Connection 1 is slow, **only Connection 1 is blocked**. Connections 2-6 keep going. With 1000 requests and 6 connections, you process ~6 at a time.
+
+**The problem:** each extra connection costs a full TCP + TLS handshake (~150-300ms), and you're still limited to 6 concurrent requests per domain. That's 6 pipelines, each sequential.
+
+### HTTP/2: All Requests Fly in Parallel on ONE Connection
+
+HTTP/2 multiplexes **all requests** on a single TCP connection as independent streams:
+
+```
+ONE connection:
+  Stream 1 (/slow):   ════════════════════════ (500ms)
+  Stream 3 (/health): ══ (1ms, done immediately)
+  Stream 5 (/api):    ═══ (2ms, done immediately)
+  Stream 7 (/users):  ═══ (2ms, done immediately)
+  ... all 1000 requests can be in-flight simultaneously
+```
+
+`/slow` taking 500ms doesn't block any other stream. No need for 6 connections — one connection handles all of them.
+
+**Total time comparison for 1000 requests where one is slow (500ms):**
+
+| | HTTP/1.1 (6 connections) | HTTP/2 (1 connection) |
+|---|---|---|
+| Connections needed | 6 TCP connections | 1 TCP connection |
+| Handshake cost | 6 × (TCP + TLS) = ~1.5s | 1 × (TCP + TLS) = ~250ms |
+| Slow request impact | Blocks 1 of 6 pipelines | Blocks only its own stream |
+| Total time | ~500ms + (994 reqs / 6) × avg_time | ~max(500ms, all other reqs) |
+
 ## WebSocket
 
 ```

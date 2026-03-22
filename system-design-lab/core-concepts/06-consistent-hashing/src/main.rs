@@ -164,7 +164,7 @@ fn main() {
     let mut ring = ConsistentHashRing::new(100);
 
     // Add initial nodes
-    println!("--- Adding initial nodes ---");
+    println!("\n  ═══ Adding initial nodes ═══");
     ring.add_node("cache-server-1");
     ring.add_node("cache-server-2");
     ring.add_node("cache-server-3");
@@ -181,7 +181,7 @@ fn main() {
         .collect();
 
     // Show initial distribution
-    println!("--- Key Distribution (10,000 keys) ---");
+    println!("\n  ═══ Key Distribution (10,000 keys) ═══");
     let dist = ring.get_distribution(&sample_keys);
     for (node, count) in &dist {
         let percentage = (*count as f64 / sample_keys.len() as f64) * 100.0;

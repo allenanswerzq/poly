@@ -443,7 +443,7 @@ fn main() {
     let service = RideService::new();
 
     // Register drivers
-    println!("--- Registering Drivers ---");
+    println!("\n  ═══ Registering Drivers ═══");
     let drivers = vec![
         Driver {
             id: "d1".to_string(),
@@ -489,7 +489,7 @@ fn main() {
     };
 
     // Get price estimates
-    println!("--- Price Estimates ---");
+    println!("\n  ═══ Price Estimates ═══");
     let pickup = GeoPoint { lat: 40.7135, lon: -74.0070 };
     let dropoff = GeoPoint { lat: 40.7580, lon: -73.9855 }; // Times Square
 
@@ -508,7 +508,7 @@ fn main() {
     println!();
 
     // Request ride
-    println!("--- Requesting Ride ---");
+    println!("\n  ═══ Requesting Ride ═══");
     let ride = service.request_ride(&rider, pickup, dropoff, VehicleType::UberX);
     println!("Ride {} requested", ride.id);
     println!("Driver assigned: {}", ride.driver_id);
@@ -520,7 +520,7 @@ fn main() {
     println!();
 
     // Simulate driver arriving and starting ride
-    println!("--- Ride Progress ---");
+    println!("\n  ═══ Ride Progress ═══");
     println!("Driver en route to pickup...");
 
     let started = service.start_ride(&ride.id).unwrap();

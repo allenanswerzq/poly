@@ -329,7 +329,7 @@ fn main() {
     println!("=== Scaling Writes Pattern Demos ===\n");
 
     // Demo 1: Sharding
-    println!("--- Pattern 1: Sharding ---");
+    println!("\n  ═══ Pattern 1: Sharding ═══");
     let db = ShardedDatabase::new(4); // 4 shards
 
     // Write 1000 items
@@ -348,7 +348,7 @@ fn main() {
     println!();
 
     // Demo 2: Write Batching
-    println!("--- Pattern 2: Write Batching ---");
+    println!("\n  ═══ Pattern 2: Write Batching ═══");
     let batcher = BatchedWriter::new(100, Duration::from_millis(50));
 
     let start = Instant::now();
@@ -364,7 +364,7 @@ fn main() {
     println!();
 
     // Demo 3: Async Write Queue
-    println!("--- Pattern 3: Async Write Queue ---");
+    println!("\n  ═══ Pattern 3: Async Write Queue ═══");
     let queue = AsyncWriteQueue::new();
     let queue_clone = Arc::clone(&queue);
 
@@ -405,7 +405,7 @@ fn main() {
     println!();
 
     // Demo 4: Write-Ahead Log
-    println!("--- Pattern 4: Write-Ahead Log ---");
+    println!("\n  ═══ Pattern 4: Write-Ahead Log ═══");
     let wal = WriteAheadLog::new();
 
     // Write some data
