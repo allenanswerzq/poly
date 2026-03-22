@@ -15,6 +15,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use serde_json::json;
 use std::time::{Duration, Instant};
 
 // =============================================================================
@@ -67,8 +68,12 @@ fn run_echo_client(addr: &str, messages: &[&str]) -> std::io::Result<()> {
 }
 
 // =============================================================================
-// 2. HTTP/1.0 vs HTTP/1.1 — Keep-Alive, Pipelining, Head-of-Line Blocking
+// 2. HTTP/1.1 — Real Server (axum) + Real Client (reqwest)
 // =============================================================================
+//
+// This uses production-grade libraries:
+// - axum: web framework built on hyper (powers many production Rust services)
+// - reqwest: HTTP client with connection pooling, keep-alive, cookies, etc.
 //
 // HTTP/1.0: one request per TCP connection (Connection: close by default)
 // HTTP/1.1: persistent connections (Connection: keep-alive by default)
@@ -76,217 +81,158 @@ fn run_echo_client(addr: &str, messages: &[&str]) -> std::io::Result<()> {
 //           BUT suffers from head-of-line (HOL) blocking — responses must
 //           arrive in request order, so a slow response blocks everything.
 
-/// HTTP/1.1 server that demonstrates keep-alive connections.
-/// Handles multiple requests on the same TCP connection.
-fn run_http11_server(addr: &str) -> std::io::Result<()> {
-    let listener = TcpListener::bind(addr)?;
-    println!("[HTTP/1.1] Listening on {}", addr);
+/// Start a real HTTP server using axum (built on hyper).
+/// Runs on a background thread with its own tokio runtime.
+fn start_http_server(addr: &str) {
+    let addr = addr.to_string();
+    thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let app = axum::Router::new()
+                .route("/", axum::routing::get(handle_root))
+                .route("/health", axum::routing::get(handle_health))
+                .route("/slow", axum::routing::get(handle_slow))
+                .route("/api/users", axum::routing::get(handle_users));
 
-    for stream in listener.incoming().take(3) {
-        match stream {
-            Ok(stream) => {
-                thread::spawn(move || handle_http11_connection(stream));
-            }
-            Err(e) => eprintln!("[HTTP/1.1] Error: {}", e),
-        }
-    }
-    Ok(())
+            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+            println!("[HTTP Server] axum + hyper listening on {}", addr);
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
 }
 
-fn handle_http11_connection(mut stream: TcpStream) {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok();
-    let peer = stream.peer_addr().unwrap();
-    let mut request_count = 0u32;
-
-    loop {
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut request_line = String::new();
-
-        match reader.read_line(&mut request_line) {
-            Ok(0) | Err(_) => break, // Connection closed or error
-            _ => {}
-        }
-
-        let parts: Vec<&str> = request_line.split_whitespace().collect();
-        if parts.len() < 3 {
-            break;
-        }
-
-        let method = parts[0];
-        let path = parts[1];
-        let _version = parts[2]; // HTTP/1.0 or HTTP/1.1
-
-        // Consume headers (read until empty line)
-        let mut connection_close = false;
-        let mut header_line = String::new();
-        loop {
-            header_line.clear();
-            match reader.read_line(&mut header_line) {
-                Ok(0) | Err(_) => break,
-                _ => {}
-            }
-            if header_line.trim().is_empty() {
-                break;
-            }
-            let lower = header_line.to_lowercase();
-            if lower.starts_with("connection:") && lower.contains("close") {
-                connection_close = true;
-            }
-        }
-
-        request_count += 1;
-        println!(
-            "[HTTP/1.1] {} {} {} (request #{} on connection from {})",
-            method, path, _version, request_count, peer
-        );
-
-        // Simulate slow response for /slow to demonstrate HOL blocking
-        if path == "/slow" {
-            thread::sleep(Duration::from_millis(500));
-        }
-
-        let (status, body) = match (method, path) {
-            ("GET", "/") => ("200 OK", r#"{"message":"hello from HTTP/1.1"}"#),
-            ("GET", "/health") => ("200 OK", r#"{"status":"healthy"}"#),
-            ("GET", "/slow") => ("200 OK", r#"{"message":"slow response (500ms)"}"#),
-            ("GET", "/api/users") => ("200 OK", r#"[{"id":1,"name":"Alice"}]"#),
-            _ => ("404 Not Found", r#"{"error":"not found"}"#),
-        };
-
-        // In HTTP/1.1, Connection: keep-alive is the default
-        let conn_header = if connection_close {
-            "close"
-        } else {
-            "keep-alive"
-        };
-
-        let response = format!(
-            "HTTP/1.1 {}\r\n\
-             Content-Type: application/json\r\n\
-             Content-Length: {}\r\n\
-             Connection: {}\r\n\
-             X-Request-Count: {}\r\n\
-             \r\n\
-             {}",
-            status,
-            body.len(),
-            conn_header,
-            request_count,
-            body
-        );
-
-        if stream.write_all(response.as_bytes()).is_err() {
-            break;
-        }
-        stream.flush().ok();
-
-        if connection_close {
-            break;
-        }
-    }
-
-    println!(
-        "[HTTP/1.1] Connection closed from {} after {} requests",
-        peer, request_count
-    );
+async fn handle_root() -> axum::Json<serde_json::Value> {
+    axum::Json(json!({"message": "hello from HTTP/1.1"}))
 }
 
-/// Demonstrates HTTP/1.1 keep-alive: multiple requests on one TCP connection
-fn demo_http11_keepalive(addr: &str) {
-    println!("  Sending 3 requests over a SINGLE TCP connection (keep-alive):");
+async fn handle_health() -> axum::Json<serde_json::Value> {
+    axum::Json(json!({"status": "healthy"}))
+}
+
+async fn handle_slow() -> axum::Json<serde_json::Value> {
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    axum::Json(json!({"message": "slow response (500ms)"}))
+}
+
+async fn handle_users() -> axum::Json<serde_json::Value> {
+    axum::Json(json!([{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]))
+}
+
+/// Demonstrates HTTP/1.1 keep-alive with a real HTTP client (reqwest).
+/// reqwest automatically reuses TCP connections via its connection pool.
+fn demo_http11_keepalive(base_url: &str) {
+    // reqwest::blocking::Client has built-in connection pooling.
+    // It reuses TCP connections via keep-alive automatically — just like browsers.
+    let client = reqwest::blocking::Client::new();
+
+    let paths = ["/", "/health", "/api/users"];
+
+    // --- Round 1: One client, connection reused via keep-alive ---
+    println!("  Round 1: ONE reqwest::Client (connection pooled, keep-alive):\n");
+
     let start = Instant::now();
-
-    if let Ok(mut stream) = TcpStream::connect(addr) {
-        let paths = ["/", "/health", "/api/users"];
-
-        for (i, path) in paths.iter().enumerate() {
-            let is_last = i == paths.len() - 1;
-            let conn = if is_last { "close" } else { "keep-alive" };
-
-            let request = format!(
-                "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: {}\r\n\r\n",
-                path, addr, conn
-            );
-            stream.write_all(request.as_bytes()).unwrap();
-            stream.flush().unwrap();
-
-            // Read response (simplified: read until we get the body based on Content-Length)
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut content_length = 0usize;
-
-            // Read status line
-            let mut line = String::new();
-            reader.read_line(&mut line).ok();
-            let status = line.trim().to_string();
-
-            // Read headers
-            loop {
-                line.clear();
-                reader.read_line(&mut line).ok();
-                if line.trim().is_empty() {
-                    break;
-                }
-                let lower = line.to_lowercase();
-                if lower.starts_with("content-length:") {
-                    content_length = lower
-                        .split(':')
-                        .nth(1)
-                        .unwrap_or("0")
-                        .trim()
-                        .parse()
-                        .unwrap_or(0);
-                }
-            }
-
-            // Read body
-            let mut body = vec![0u8; content_length];
-            reader.read_exact(&mut body).ok();
-
-            println!(
-                "    GET {} -> {} (body: {} bytes)",
-                path,
-                status,
-                content_length
-            );
-        }
+    for path in &paths {
+        let url = format!("{}{}", base_url, path);
+        let req_start = Instant::now();
+        let resp = client.get(&url).send().unwrap();
+        let status = resp.status();
+        let body = resp.text().unwrap();
+        println!(
+            "    GET {:12} -> {} {} ({:?})",
+            path,
+            status.as_u16(),
+            body,
+            req_start.elapsed()
+        );
     }
+    let reused_time = start.elapsed();
     println!(
-        "  All 3 requests completed in {:?} (1 TCP connection!)\n",
-        start.elapsed()
+        "\n  Total (pooled): {:?}",
+        reused_time
     );
+
+    // --- Round 2: New client per request, forces new TCP connection each time ---
+    println!("\n  Round 2: NEW reqwest::Client per request (new TCP connection each time):\n");
+
+    let start = Instant::now();
+    for path in &paths {
+        let fresh_client = reqwest::blocking::Client::new();
+        let url = format!("{}{}", base_url, path);
+        let req_start = Instant::now();
+        let resp = fresh_client.get(&url).send().unwrap();
+        let status = resp.status();
+        let body = resp.text().unwrap();
+        println!(
+            "    GET {:12} -> {} {} ({:?})",
+            path,
+            status.as_u16(),
+            body,
+            req_start.elapsed()
+        );
+    }
+    let fresh_time = start.elapsed();
+    println!(
+        "\n  Total (fresh):  {:?}",
+        fresh_time
+    );
+
+    println!(
+        "\n  Pooled is ~{:.0}% faster — 2nd/3rd requests skip TCP handshake!",
+        (1.0 - reused_time.as_secs_f64() / fresh_time.as_secs_f64()) * 100.0
+    );
+    println!("  Try: curl -v {}/ — look for 'Connection: keep-alive' in response\n", base_url);
 }
 
-/// Demonstrates HTTP/1.1 HOL blocking: /slow blocks subsequent responses
-fn demo_http11_hol_blocking(addr: &str) {
-    println!("  HEAD-OF-LINE BLOCKING DEMO:");
-    println!("  Requesting /slow then /health — /health is blocked by /slow\n");
+/// Demonstrates HTTP/1.1 HOL blocking: /slow blocks subsequent responses.
+fn demo_http11_hol_blocking(base_url: &str) {
+    let client = reqwest::blocking::Client::new();
 
-    // Sequential: /slow blocks /health
+    println!("  HEAD-OF-LINE BLOCKING:");
+    println!("  On a single HTTP/1.1 connection, responses must come in order.");
+    println!("  /slow (500ms) blocks /health even though /health is instant.\n");
+
+    // Sequential requests — this is what happens on a single HTTP/1.1 connection
+    println!("  Sequential (HTTP/1.1 behavior):");
     let start = Instant::now();
     for path in &["/slow", "/health"] {
+        let url = format!("{}{}", base_url, path);
         let req_start = Instant::now();
-        if let Ok(mut stream) = TcpStream::connect(addr) {
-            let request = format!(
-                "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-                path, addr
-            );
-            stream.write_all(request.as_bytes()).unwrap();
-            stream.flush().unwrap();
-
-            let mut reader = BufReader::new(&stream);
-            let mut line = String::new();
-            reader.read_line(&mut line).ok();
-            println!(
-                "    GET {} -> {} ({:?})",
-                path,
-                line.trim(),
-                req_start.elapsed()
-            );
-        }
+        let resp = client.get(&url).send().unwrap();
+        println!(
+            "    GET {:12} -> {} ({:?})",
+            path,
+            resp.status(),
+            req_start.elapsed()
+        );
     }
-    println!("  Total: {:?}\n", start.elapsed());
+    println!("  Sequential total: {:?}\n", start.elapsed());
+
+    // Parallel requests — simulating what HTTP/2 multiplexing achieves
+    // (HTTP/2 does this on ONE connection; here we use two connections)
+    println!("  Parallel (what HTTP/2 multiplexing achieves on one connection):");
+    let start = Instant::now();
+    let base1 = base_url.to_string();
+    let base2 = base_url.to_string();
+    let h1 = thread::spawn(move || {
+        let c = reqwest::blocking::Client::new();
+        let t = Instant::now();
+        let r = c.get(format!("{}/slow", base1)).send().unwrap();
+        (r.status().to_string(), t.elapsed())
+    });
+    let h2 = thread::spawn(move || {
+        let c = reqwest::blocking::Client::new();
+        let t = Instant::now();
+        let r = c.get(format!("{}/health", base2)).send().unwrap();
+        (r.status().to_string(), t.elapsed())
+    });
+    let (s1, d1) = h1.join().unwrap();
+    let (s2, d2) = h2.join().unwrap();
+    println!("    GET /slow   -> {} ({:?})", s1, d1);
+    println!("    GET /health -> {} ({:?})", s2, d2);
+    println!(
+        "  Parallel total: {:?} — /health didn't wait for /slow!\n",
+        start.elapsed()
+    );
 }
 
 // =============================================================================
@@ -1211,13 +1157,14 @@ fn main() {
     run_echo_client(echo_addr, &["Hello", "World", "Goodbye"]).ok();
     println!();
 
-    // ── Demo 2: HTTP/1.1 Keep-Alive & HOL Blocking ──────────────────────
-    println!("━━━ 2. HTTP/1.1 — Keep-Alive & Head-of-Line Blocking ━━━");
+    // ── Demo 2: HTTP/1.1 — Real Server + Client ─────────────────────────
+    println!("━━━ 2. HTTP/1.1 — Real Server (axum) + Real Client (reqwest) ━━━");
     let http_addr = "127.0.0.1:9002";
-    let _http_server = thread::spawn(move || run_http11_server(http_addr).ok());
-    thread::sleep(Duration::from_millis(50));
-    demo_http11_keepalive(http_addr);
-    demo_http11_hol_blocking(http_addr);
+    start_http_server(http_addr);
+    thread::sleep(Duration::from_millis(200));
+    let base_url = format!("http://{}", http_addr);
+    demo_http11_keepalive(&base_url);
+    demo_http11_hol_blocking(&base_url);
 
     // ── Demo 3: HTTP/2 Binary Framing ────────────────────────────────────
     println!("━━━ 3. HTTP/2 — Binary Framing & Multiplexing ━━━");

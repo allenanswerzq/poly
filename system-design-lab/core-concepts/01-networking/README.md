@@ -135,6 +135,42 @@ Network switch (WiFi→LTE):
 | **Connection migration** | No | No | Yes |
 | **Encryption** | Optional (HTTPS) | Effectively required | Always (built-in) |
 
+## HTTP Version Negotiation
+
+How do client and server agree on which HTTP version to use? The mechanism is different for each upgrade path.
+
+### HTTP/1.0 ↔ HTTP/1.1
+
+The client declares the version in the request line (e.g., `GET / HTTP/1.1`). The server responds with the highest version it supports **up to** the client's version. If the client says `HTTP/1.1` but the server only knows `HTTP/1.0`, it responds with `HTTP/1.0` and the client downgrades.
+
+### HTTP/1.1 → HTTP/2
+
+Two paths depending on whether TLS is used:
+
+- **With TLS (HTTPS):** Uses **ALPN** (Application-Layer Protocol Negotiation) — a TLS extension. During the TLS handshake, the client sends a list of supported protocols (`h2, http/1.1`), and the server picks one. This happens *before* any HTTP traffic, so there's zero overhead.
+- **Without TLS (rare):** The client sends an HTTP/1.1 request with `Upgrade: h2c` header. If the server supports it, it responds `101 Switching Protocols`. In practice almost nobody does this — HTTP/2 is effectively HTTPS-only.
+
+### HTTP/2 → HTTP/3
+
+HTTP/3 runs on a completely different transport (UDP/QUIC vs TCP), so the upgrade works differently. The server advertises HTTP/3 support via an **`Alt-Svc`** header in an HTTP/2 response:
+
+```
+Alt-Svc: h3=":443"; ma=86400
+```
+
+This tells the client: "I also speak HTTP/3 on UDP port 443." The client can then *optionally* switch to QUIC for subsequent requests. If QUIC fails (e.g., UDP blocked by a firewall), the client falls back to HTTP/2 over TCP. This is called **happy eyeballs** — try both, use whichever connects first.
+
+### Summary
+
+| Upgrade Path | Mechanism | Where It Happens |
+|---|---|---|
+| 1.0 ↔ 1.1 | Version in request line | First line of HTTP request |
+| 1.1 → 2 (TLS) | **ALPN** in TLS handshake | During TLS negotiation |
+| 1.1 → 2 (plain) | `Upgrade: h2c` header | HTTP request/response (rare) |
+| 2 → 3 | `Alt-Svc` header | HTTP response from server |
+
+The key insight: **the client always proposes, the server decides**. And there's always a fallback — if the server doesn't support a newer version, the connection works at the older version. This is why HTTP versions are backward-compatible and the internet didn't break when HTTP/2 and HTTP/3 rolled out.
+
 ## WebSocket
 
 ```
