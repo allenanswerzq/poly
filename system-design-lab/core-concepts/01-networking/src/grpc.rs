@@ -1,81 +1,123 @@
-//! gRPC-style RPC over HTTP/2 with real gRPC 5-byte message framing.
+//! gRPC demo using tonic — real .proto codegen, real gRPC server + client.
+//!
+//! The proto file (proto/greeter.proto) defines:
+//!   service Greeter {
+//!     rpc SayHello (HelloRequest) returns (HelloReply);           // unary
+//!     rpc SayHelloStream (HelloRequest) returns (stream HelloReply); // server streaming
+//!   }
 
 use std::time::Instant;
 
-/// Demonstrates gRPC-style RPC: unary and concurrent calls over HTTP/2.
-pub fn demo(base_url: &str) {
-    println!("\n  ═══ demo_grpc_style_rpc ═══\n");
-    println!("  gRPC = HTTP/2 + protobuf + 5-byte message prefix.");
-    println!("  We use the real gRPC wire format with JSON (same framing, easier to read).\n");
+// Import the generated code from greeter.proto
+pub mod greeter {
+    tonic::include_proto!("greeter");
+}
+
+use greeter::greeter_client::GreeterClient;
+use greeter::greeter_server::{Greeter, GreeterServer};
+use greeter::{HelloReply, HelloRequest};
+
+/// gRPC service implementation
+#[derive(Default)]
+struct MyGreeter;
+
+#[tonic::async_trait]
+impl Greeter for MyGreeter {
+    /// Unary RPC: one request → one response
+    async fn say_hello(
+        &self,
+        request: tonic::Request<HelloRequest>,
+    ) -> Result<tonic::Response<HelloReply>, tonic::Status> {
+        let name = request.into_inner().name;
+        println!("  [gRPC Server] SayHello(name=\"{}\")", name);
+        Ok(tonic::Response::new(HelloReply {
+            message: format!("Hello, {}!", name),
+            count: 1,
+        }))
+    }
+
+    /// Server streaming RPC: one request → stream of responses
+    type SayHelloStreamStream =
+        tokio_stream::wrappers::ReceiverStream<Result<HelloReply, tonic::Status>>;
+
+    async fn say_hello_stream(
+        &self,
+        request: tonic::Request<HelloRequest>,
+    ) -> Result<tonic::Response<Self::SayHelloStreamStream>, tonic::Status> {
+        let name = request.into_inner().name;
+        println!("  [gRPC Server] SayHelloStream(name=\"{}\") — streaming 5 responses", name);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(5);
+        tokio::spawn(async move {
+            for i in 1..=5 {
+                let reply = HelloReply {
+                    message: format!("Hello #{} to {}!", i, name),
+                    count: i,
+                };
+                tx.send(Ok(reply)).await.ok();
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        });
+
+        Ok(tonic::Response::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
+    }
+}
+
+/// Real gRPC demo: start tonic server, make unary + streaming calls.
+pub fn demo(_base_url: &str) {
+    println!("\n  ═══ demo_grpc ═══\n");
+    println!("  Using tonic (production gRPC framework) with real .proto codegen.\n");
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let base = base_url.to_string();
-
     rt.block_on(async {
-        let client = reqwest::ClientBuilder::new()
-            .http2_prior_knowledge()
-            .build()
-            .unwrap();
+        // ── Start gRPC server ────────────────────────────────────────────
+        let addr = "127.0.0.1:9012".parse().unwrap();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(GreeterServer::new(MyGreeter::default()))
+                .serve(addr)
+                .await
+                .unwrap();
+        });
 
-        println!("  1) Unary RPC (like a normal function call):");
-        println!("     POST /rpc/get_user with gRPC-framed body\n");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        println!("  [gRPC Server] tonic listening on {} (HTTP/2)\n", addr);
 
-        let request_body = r#"{"user_id": 42}"#;
-        let grpc_frame = encode(request_body.as_bytes());
+        // ── Unary RPC ────────────────────────────────────────────────────
+        println!("  1) Unary RPC: SayHello(\"Alice\")\n");
+        let mut client = GreeterClient::connect("http://127.0.0.1:9012").await.unwrap();
 
         let start = Instant::now();
-        let resp = client
-            .post(format!("{}/api/users", base))
-            .header("content-type", "application/grpc+json")
-            .header("grpc-encoding", "identity")
-            .body(grpc_frame.clone())
-            .send()
+        let response = client
+            .say_hello(tonic::Request::new(HelloRequest {
+                name: "Alice".into(),
+            }))
             .await
             .unwrap();
 
-        println!("     Request:  {} ({} bytes on wire: 5-byte prefix + {} payload)",
-            request_body, grpc_frame.len(), request_body.len());
-        println!("     Response: {} version={:?} ({:?})",
-            resp.status(), resp.version(), start.elapsed());
-        println!("     ^ Uses HTTP/2 POST to /service/method path (like gRPC)\n");
+        let reply = response.into_inner();
+        println!(
+            "     Response: message=\"{}\" count={} ({:?})\n",
+            reply.message, reply.count, start.elapsed()
+        );
 
-        println!("  gRPC message framing (5-byte prefix):");
-        println!("  ┌──────────┬──────────────┬─────────────────────┐");
-        println!("  │Compress 1B│ Length 4B BE │ Protobuf/JSON body  │");
-        println!("  └──────────┴──────────────┴─────────────────────┘");
-        println!("  Example: [0x00][0x00 0x00 0x00 0x0F][{{\"user_id\":42}}]");
-        println!("           no compression  15 bytes    the message\n");
+        // ── Concurrent unary RPCs ────────────────────────────────────────
+        println!("  2) 5 concurrent unary RPCs (multiplexed on one HTTP/2 connection):\n");
 
-        println!("  2) Concurrent RPCs (multiplexed on one HTTP/2 connection):");
-        println!("     Fire 5 \"RPCs\" at once — all on same connection\n");
-
-        let rpcs = vec![
-            ("GetUser",   "/api/users", r#"{"id":1}"#),
-            ("GetHealth", "/health",    r#"{"check":"liveness"}"#),
-            ("SlowQuery", "/slow",      r#"{"query":"SELECT * FROM big_table"}"#),
-            ("GetUser2",  "/api/users", r#"{"id":2}"#),
-            ("GetRoot",   "/",          r#"{"ping":true}"#),
-        ];
-
+        let names = ["Bob", "Carol", "Dave", "Eve", "Frank"];
         let start = Instant::now();
         let mut handles = vec![];
 
-        for (name, path, body) in &rpcs {
-            let client = client.clone();
-            let url = format!("{}{}", base, path);
+        for name in &names {
+            let mut c = client.clone();
             let name = name.to_string();
-            let frame = encode(body.as_bytes());
-
             handles.push(tokio::spawn(async move {
                 let t = Instant::now();
-                let resp = client
-                    .post(&url)
-                    .header("content-type", "application/grpc+json")
-                    .body(frame)
-                    .send()
+                let resp = c
+                    .say_hello(tonic::Request::new(HelloRequest { name: name.clone() }))
                     .await
                     .unwrap();
-                (name, resp.status().to_string(), resp.version(), t.elapsed())
+                (name, resp.into_inner().message, t.elapsed())
             }));
         }
 
@@ -83,38 +125,50 @@ pub fn demo(base_url: &str) {
         for h in handles {
             results.push(h.await.unwrap());
         }
-        results.sort_by(|a, b| a.3.cmp(&b.3));
+        results.sort_by(|a, b| a.2.cmp(&b.2));
 
-        for (name, status, version, elapsed) in &results {
-            println!("     {:12} -> {} {:?} ({:?})", name, status, version, elapsed);
+        for (name, msg, elapsed) in &results {
+            println!("     SayHello(\"{}\") → \"{}\" ({:?})", name, msg, elapsed);
         }
-        println!("     Total: {:?}", start.elapsed());
-        println!("     ^ SlowQuery took 500ms but didn't block other RPCs!");
-        println!("     All 5 RPCs multiplexed on ONE HTTP/2 connection.\n");
+        println!("     Total: {:?} (all 5 on one HTTP/2 connection)\n", start.elapsed());
+
+        // ── Server streaming RPC ─────────────────────────────────────────
+        println!("  3) Server streaming RPC: SayHelloStream(\"World\")\n");
+
+        let start = Instant::now();
+        let mut stream = client
+            .say_hello_stream(tonic::Request::new(HelloRequest {
+                name: "World".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let mut stream_count = 0;
+        while let Some(Ok(reply)) = futures::StreamExt::next(&mut stream).await {
+            stream_count += 1;
+            println!(
+                "     Stream #{}: message=\"{}\" ({:?})",
+                reply.count, reply.message, start.elapsed()
+            );
+        }
+        println!(
+            "     Stream complete: {} messages ({:?})\n",
+            stream_count, start.elapsed()
+        );
+
+        server.abort();
     });
 
-    println!("  gRPC STREAMING MODES:");
-    println!("  ┌────────────────────┬──────────────────────────────────────┐");
-    println!("  │ Unary              │ req → resp (like normal HTTP)        │");
-    println!("  │ Server streaming   │ req → resp1, resp2, resp3...         │");
-    println!("  │ Client streaming   │ req1, req2, req3... → resp           │");
-    println!("  │ Bidi streaming     │ msgs flowing both ways (like WS)     │");
-    println!("  └────────────────────┴──────────────────────────────────────┘");
+    println!("  WHAT JUST HAPPENED:");
+    println!("  • proto/greeter.proto → tonic-build generates Rust types + client/server");
+    println!("  • Server: impl Greeter for MyGreeter (just fill in the functions)");
+    println!("  • Client: GreeterClient::connect() → client.say_hello()");
+    println!("  • All over HTTP/2 with protobuf serialization (binary, compact)");
     println!();
-    println!("  WHY gRPC OVER REST:");
-    println!("  • Protobuf is 2-10x smaller than JSON (binary, no field names)");
-    println!("  • HTTP/2 multiplexing = many RPCs on one connection");
-    println!("  • Codegen from .proto file = typed client/server stubs");
-    println!("  • Built-in streaming (REST needs SSE or WebSocket hacks)");
-    println!("  • Deadlines, cancellation, metadata propagation built-in");
+    println!("  STREAMING MODES in our .proto:");
+    println!("  • SayHello:       unary (req → resp)");
+    println!("  • SayHelloStream: server streaming (req → stream of resp)");
+    println!("  • (not shown):    client streaming, bidirectional streaming");
     println!();
-}
-
-/// Encode a message in gRPC wire format: [compressed: 0] [length: 4 bytes BE] [message]
-fn encode(msg: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(5 + msg.len());
-    frame.push(0);
-    frame.extend_from_slice(&(msg.len() as u32).to_be_bytes());
-    frame.extend_from_slice(msg);
-    frame
 }

@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package greeter;
+
+// A simple greeting service — the "Hello World" of gRPC.
+service Greeter {
+  // Unary RPC: one request, one response.
+  rpc SayHello (HelloRequest) returns (HelloReply);
+
+  // Server streaming RPC: one request, stream of responses.
+  rpc SayHelloStream (HelloRequest) returns (stream HelloReply);
+}
+
+message HelloRequest {
+  string name = 1;
+}
+
+message HelloReply {
+  string message = 1;
+  int32 count = 2;
+}
