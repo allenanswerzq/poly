@@ -140,6 +140,66 @@ Rate limiting is best at the gateway because:
 - Can rate-limit by API key, IP, user, or path
 - Protects all backends uniformly
 
+#### Rate Limiting Algorithms Compared
+
+**Token Bucket (what we use — and what most production systems use)**
+
+```
+Bucket for "client-A" (max 5 tokens, refill 2/sec):
+
+  Time 0:  [●●●●●]  5 tokens (full)
+  Req 1:   [●●●● ]  4 tokens
+  Req 2:   [●●●  ]  3 tokens
+  Req 3:   [●●   ]  2 tokens
+  Req 4:   [●    ]  1 token
+  Req 5:   [     ]  0 tokens → bucket empty
+  Req 6:   REJECTED (429 Too Many Requests)
+
+  ...1 second passes, 2 tokens refill...
+
+  Req 7:   [●    ]  1 token left → allowed
+```
+
+Allows bursts (spend saved-up tokens instantly), enforces sustained rate (refill caps long-term throughput), O(1) memory per client.
+
+**Fixed Window Counter** — count requests per time window (e.g., 100/min)
+
+```
+Window: [00:00 - 01:00] limit = 100
+
+00:00──────────────────01:00──────────────────02:00
+       80 requests            20 requests
+                    ↑ BUT: 50 at 00:59 + 50 at 01:01 = 100 in 2 seconds!
+```
+
+Problem: burst at window boundaries. A client can send 100 requests at 00:59 and 100 more at 01:01 — 200 requests in 2 seconds while "respecting" the limit.
+
+**Sliding Window Log** — store timestamp of every request, count those within last N seconds
+
+Problem: stores every request timestamp. At 10K req/s that's 600K timestamps per window per client. Memory explodes.
+
+**Leaky Bucket** — requests enter a queue, processed at a fixed drip rate
+
+```
+┌─────────┐
+│ ● ● ● ● │ → drip out at 2/sec (fixed rate, no bursts)
+└─────────┘
+```
+
+Problem: no bursts allowed. Legit users who send 3 quick requests have to wait in a queue. Adds latency.
+
+#### Why Token Bucket Wins
+
+| Concern | Token Bucket | Fixed Window | Sliding Log | Leaky Bucket |
+|---------|-------------|-------------|-------------|-------------|
+| **Allows bursts** | Yes (up to bucket size) | Boundary exploit | No burst control | No (fixed drip) |
+| **Steady-rate limit** | Yes (refill rate) | Approximate | Yes | Yes |
+| **Memory** | O(1) per client | O(1) per client | O(n) per request | O(1) per client |
+| **Latency added** | None (allow/deny) | None | None | Yes (queue wait) |
+| **Boundary issues** | None | Yes (double burst) | None | None |
+
+Used by: nginx, AWS API Gateway, Stripe, Cloudflare, Kong.
+
 ### Pattern 4: Request Aggregation (BFF — Backend for Frontend)
 
 Mobile app needs data from 3 services. Instead of 3 round-trips:

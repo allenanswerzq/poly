@@ -136,13 +136,157 @@ fn demo_reverse_proxy() {
 }
 
 // =============================================================================
+// 1b. Real Proxy — Pingora (Cloudflare's production proxy framework)
+// =============================================================================
+
+fn demo_pingora_proxy() {
+    use pingora::prelude::*;
+    use pingora::proxy::{ProxyHttp, Session};
+    use pingora::upstreams::peer::HttpPeer;
+    use pingora::lb::{selection::RoundRobin, LoadBalancer};
+
+    println!("\n  ═══ demo_pingora_proxy ═══\n");
+    println!("  Running a REAL reverse proxy using Cloudflare's Pingora framework.\n");
+
+    struct RoutingProxy {
+        user_upstream: Arc<LoadBalancer<RoundRobin>>,
+        order_upstream: Arc<LoadBalancer<RoundRobin>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyHttp for RoutingProxy {
+        type CTX = ();
+        fn new_ctx(&self) -> Self::CTX {}
+
+        async fn upstream_peer(
+            &self,
+            session: &mut Session,
+            _ctx: &mut Self::CTX,
+        ) -> Result<Box<HttpPeer>> {
+            let path = session.req_header().uri.path();
+
+            let upstream = if path.starts_with("/api/users") {
+                self.user_upstream.select(b"", 256)
+            } else if path.starts_with("/api/orders") {
+                self.order_upstream.select(b"", 256)
+            } else {
+                None
+            };
+
+            let upstream =
+                upstream.ok_or_else(|| pingora::Error::new_str("no route matched"))?;
+
+            let peer = HttpPeer::new(upstream, false, String::new());
+            Ok(Box::new(peer))
+        }
+
+        async fn upstream_request_filter(
+            &self,
+            _session: &mut Session,
+            upstream_request: &mut pingora::http::RequestHeader,
+            _ctx: &mut Self::CTX,
+        ) -> Result<()> {
+            // Rewrite: /api/users/1 → /users/1 (strip /api prefix)
+            let path = upstream_request.uri.path().to_string();
+            if let Some(rest) = path.strip_prefix("/api") {
+                let new_uri = rest.parse().unwrap();
+                upstream_request.set_uri(new_uri);
+            }
+            upstream_request.insert_header("X-Forwarded-By", "pingora-gateway")?;
+            Ok(())
+        }
+    }
+
+    // Start Pingora in a background thread (run_forever blocks + calls exit)
+    thread::spawn(|| {
+        let mut server = Server::new(None).unwrap();
+        server.bootstrap();
+
+        let users = LoadBalancer::try_from_iter(["127.0.0.1:9101"]).unwrap();
+        let orders = LoadBalancer::try_from_iter(["127.0.0.1:9102"]).unwrap();
+
+        let proxy = RoutingProxy {
+            user_upstream: Arc::new(users),
+            order_upstream: Arc::new(orders),
+        };
+
+        let mut svc = pingora::proxy::http_proxy_service(&server.configuration, proxy);
+        svc.add_tcp("127.0.0.1:6188");
+
+        server.add_service(svc);
+        server.run(pingora::server::RunArgs::default());
+    });
+
+    // Wait for Pingora to bind the port
+    thread::sleep(Duration::from_secs(2));
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+
+    println!("    Pingora proxy on :6188 → backends on :9101, :9102\n");
+
+    // Test: /api/users/1
+    match client.get("http://127.0.0.1:6188/api/users/1").send() {
+        Ok(resp) => {
+            let status = resp.status();
+            let body: Value = resp.json().unwrap_or_default();
+            println!("    GET /api/users/1   → {} service={:?}",
+                status, body.get("service").unwrap_or(&json!("?")));
+        }
+        Err(e) => println!("    GET /api/users/1   → ERROR: {}", e),
+    }
+
+    // Test: /api/orders/42
+    match client.get("http://127.0.0.1:6188/api/orders/42").send() {
+        Ok(resp) => {
+            let status = resp.status();
+            let body: Value = resp.json().unwrap_or_default();
+            println!("    GET /api/orders/42  → {} service={:?}",
+                status, body.get("service").unwrap_or(&json!("?")));
+        }
+        Err(e) => println!("    GET /api/orders/42  → ERROR: {}", e),
+    }
+
+    // Test: unknown route
+    match client.get("http://127.0.0.1:6188/api/unknown").send() {
+        Ok(resp) => println!("    GET /api/unknown   → {} (no route)", resp.status()),
+        Err(e) => println!("    GET /api/unknown   → ERROR: {}", e),
+    }
+
+    println!("\n    This is Cloudflare's Pingora — the same framework powering their edge.");
+    println!("    Path routing, load balancing, connection pooling, all built-in.\n");
+}
+
+// =============================================================================
 // 2. Rate Limiting (Token Bucket)
 // =============================================================================
 
+// Token bucket rate limiter.
+// Each client (identified by key) gets its own bucket of tokens.
+// Requests consume tokens; tokens refill over time at a fixed rate.
+//
+// Bucket for "client-A" (max 5 tokens, refill 2/sec):
+//
+//   Time 0:  [●●●●●]  5 tokens (full)
+//   Req 1:   [●●●● ]  4 tokens
+//   Req 2:   [●●●  ]  3 tokens
+//   Req 3:   [●●   ]  2 tokens
+//   Req 4:   [●    ]  1 token
+//   Req 5:   [     ]  0 tokens → bucket empty
+//   Req 6:   REJECTED (429 Too Many Requests)
+//
+//   ...1 second passes, 2 tokens refill...
+//
+//   Req 7:   [●    ]  1 token left → allowed
+//   Req 8:   [     ]  0 tokens → rejected again
 struct RateLimiter {
-    buckets: DashMap<String, (u32, u64)>, // key → (tokens, last_refill_timestamp)
-    max_tokens: u32,
-    refill_rate: u32, // tokens per second
+    // Concurrent hashmap: "client-key" → (remaining_tokens, last_refill_unix_secs)
+    // DashMap allows multiple threads to read/write without a global lock
+    buckets: DashMap<String, (u32, u64)>,
+    max_tokens: u32,    // bucket capacity (also the max burst size)
+    refill_rate: u32,   // how many tokens are added per second
 }
 
 impl RateLimiter {
@@ -154,23 +298,29 @@ impl RateLimiter {
         }
     }
 
+    // Returns true if the request is allowed, false if rate-limited (429).
     fn allow(&self, key: &str) -> bool {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        // Look up this client's bucket, or create a new one starting full
         let mut entry = self.buckets.entry(key.to_string()).or_insert((self.max_tokens, now));
         let (tokens, last_refill) = entry.value_mut();
 
-        // Refill tokens based on time elapsed
+        // Step 1: Refill — add tokens based on how much time has passed
+        // e.g., 3 seconds elapsed × 2 tokens/sec = 6 new tokens
         let elapsed = now - *last_refill;
         if elapsed > 0 {
             *tokens = (*tokens + (elapsed as u32 * self.refill_rate)).min(self.max_tokens);
+            //                                                       ^^^^ never exceed capacity
             *last_refill = now;
         }
 
+        // Step 2: Try to consume one token
         if *tokens > 0 {
-            *tokens -= 1;
-            true
+            *tokens -= 1;  // spend a token
+            true           // request allowed
         } else {
-            false
+            false          // no tokens left → 429 Too Many Requests
         }
     }
 }
@@ -201,6 +351,206 @@ fn demo_rate_limiting() {
     let b = limiter.allow("client-C");
     println!("    client-B: {} (fresh bucket)", if a { "✓" } else { "✗" });
     println!("    client-C: {} (fresh bucket)\n", if b { "✓" } else { "✗" });
+}
+
+// =============================================================================
+// 2b. Rate Limiting Algorithm Comparison
+// =============================================================================
+
+// ── Fixed Window Counter ──
+// Divide time into fixed windows (e.g., 1-second windows).
+// Count requests per window. Reject if count exceeds limit.
+//
+// Problem: boundary burst. 5 requests at 0.9s + 5 at 1.1s = 10 in 0.2s
+//
+//   Window 1 [0s─1s]: ●●●●●   5/5 (ok)
+//   Window 2 [1s─2s]: ●●●●●   5/5 (ok)
+//                   ↑ but 10 requests in 0.2s if clustered at boundary!
+struct FixedWindowLimiter {
+    // key → (count_in_current_window, window_start_timestamp)
+    windows: DashMap<String, (u32, u64)>,
+    max_requests: u32,    // max requests per window
+    window_secs: u64,     // window duration in seconds
+}
+
+impl FixedWindowLimiter {
+    fn new(max_requests: u32, window_secs: u64) -> Self {
+        Self { windows: DashMap::new(), max_requests, window_secs }
+    }
+
+    fn allow(&self, key: &str, now: u64) -> bool {
+        let window_start = now / self.window_secs * self.window_secs;
+
+        let mut entry = self.windows.entry(key.to_string()).or_insert((0, window_start));
+        let (count, entry_window) = entry.value_mut();
+
+        // New window? Reset counter.
+        if *entry_window != window_start {
+            *count = 0;
+            *entry_window = window_start;
+        }
+
+        if *count < self.max_requests {
+            *count += 1;
+            true
+        } else {
+            false   // window limit exceeded → 429
+        }
+    }
+}
+
+// ── Sliding Window Log ──
+// Store the timestamp of every request. Count those within the last N seconds.
+// Most accurate, but uses O(n) memory per client.
+//
+//   Timestamps: [0.1, 0.3, 0.5, 0.8, 0.9, 1.1, 1.2]
+//   Window = last 1s from now=1.2:  count timestamps >= 0.2 → 6 requests
+//
+// In production at 10K req/s: 10K timestamps per client per second = memory bomb
+struct SlidingWindowLogLimiter {
+    // key → vec of request timestamps (milliseconds)
+    logs: DashMap<String, Vec<u64>>,
+    max_requests: u32,
+    window_ms: u64,       // window size in milliseconds
+}
+
+impl SlidingWindowLogLimiter {
+    fn new(max_requests: u32, window_ms: u64) -> Self {
+        Self { logs: DashMap::new(), max_requests, window_ms }
+    }
+
+    fn allow(&self, key: &str, now_ms: u64) -> bool {
+        let mut entry = self.logs.entry(key.to_string()).or_insert_with(Vec::new);
+        let timestamps = entry.value_mut();
+
+        // Remove expired timestamps (outside the window)
+        let cutoff = now_ms.saturating_sub(self.window_ms);
+        timestamps.retain(|&t| t > cutoff);
+
+        if (timestamps.len() as u32) < self.max_requests {
+            timestamps.push(now_ms);  // Record this request
+            true
+        } else {
+            false   // too many requests in window → 429
+        }
+        // Note: timestamps vec keeps growing until cleanup — this is the memory problem
+    }
+}
+
+// ── Leaky Bucket ──
+// Requests enter a queue that "leaks" (processes) at a fixed rate.
+// If the queue is full, reject. No bursts allowed — strict fixed rate.
+//
+//   ┌─────────────┐
+//   │ ● ● ● ● ●   │  queue (capacity 5)
+//   └─────┬───────┘
+//         ▼ drip at 2/sec (fixed, always)
+//
+// Unlike token bucket: even if queue is empty, output rate is still fixed.
+// This means requests experience DELAY (queuing), not just accept/reject.
+// For simplicity we implement the "reject when full" variant (no actual queue).
+struct LeakyBucketLimiter {
+    // key → (water_level, last_leak_timestamp_ms)
+    buckets: DashMap<String, (f64, u64)>,
+    capacity: f64,        // max water level (queue size)
+    leak_rate: f64,       // how many units leak per second
+}
+
+impl LeakyBucketLimiter {
+    fn new(capacity: f64, leak_rate: f64) -> Self {
+        Self { buckets: DashMap::new(), capacity, leak_rate }
+    }
+
+    fn allow(&self, key: &str, now_ms: u64) -> bool {
+        let mut entry = self.buckets.entry(key.to_string()).or_insert((0.0, now_ms));
+        let (water, last_leak) = entry.value_mut();
+
+        // Leak water based on elapsed time
+        let elapsed_secs = (now_ms - *last_leak) as f64 / 1000.0;
+        *water = (*water - elapsed_secs * self.leak_rate).max(0.0);
+        *last_leak = now_ms;
+
+        // Try to add 1 unit of water (1 request)
+        if *water + 1.0 <= self.capacity {
+            *water += 1.0;
+            true    // fits in the bucket
+        } else {
+            false   // bucket overflowing → 429
+        }
+    }
+}
+
+fn demo_rate_limiting_comparison() {
+    println!("\n  ═══ demo_rate_limiting_comparison ═══\n");
+    println!("  Comparing 4 rate limiting algorithms side by side:\n");
+
+    // --- Fixed Window ---
+    println!("  ── 1. Fixed Window Counter (5 req per 1s window) ──\n");
+    let fw = FixedWindowLimiter::new(5, 1);
+    // All requests in "same second" (window 0-1s)
+    for i in 1..=7 {
+        let allowed = fw.allow("client", 0); // all at timestamp 0 (same window)
+        println!("    Req #{} at t=0.{}s: {}", i, i, if allowed { "✓" } else { "✗ REJECTED" });
+    }
+    // Now show the boundary problem: requests at end of window 1 + start of window 2
+    println!("\n    Boundary problem:");
+    let fw2 = FixedWindowLimiter::new(5, 10); // 5 req per 10s window
+    // 5 requests at t=9 (end of window [0-10))
+    for i in 1..=5 {
+        fw2.allow("client", 9);
+        if i == 5 { println!("    5 requests at t=9s  (end of window 1)   → all ✓"); }
+    }
+    // 5 more at t=10 (start of new window [10-20)) — counter resets!
+    for i in 1..=5 {
+        fw2.allow("client", 10);
+        if i == 5 { println!("    5 requests at t=10s (start of window 2) → all ✓"); }
+    }
+    println!("    → 10 requests in 1 second! Limit was 5/10s. That's the bug.\n");
+
+    // --- Sliding Window Log ---
+    println!("  ── 2. Sliding Window Log (5 req per 1000ms) ──\n");
+    let sw = SlidingWindowLogLimiter::new(5, 1000);
+    // Spread over time
+    let times = [100, 200, 400, 600, 800, 900, 950];
+    for (i, &t) in times.iter().enumerate() {
+        let allowed = sw.allow("client", t);
+        println!("    Req #{} at t={}ms: {}", i + 1, t, if allowed { "✓" } else { "✗ REJECTED" });
+    }
+    // Show memory usage
+    let log_size = sw.logs.get("client").map(|v| v.len()).unwrap_or(0);
+    println!("\n    Stored {} timestamps in memory (grows with every request!)", log_size);
+    println!("    At 10K req/s → 10,000 timestamps per client per second.\n");
+
+    // --- Leaky Bucket ---
+    println!("  ── 3. Leaky Bucket (capacity 5, leak 2/sec) ──\n");
+    let lb = LeakyBucketLimiter::new(5.0, 2.0);
+    // Burst: 7 requests at once (t=0)
+    for i in 1..=7 {
+        let allowed = lb.allow("client", 0);
+        println!("    Req #{} at t=0ms:    {}{}", i,
+            if allowed { "✓" } else { "✗ REJECTED" },
+            if i == 5 { " ← bucket full" } else { "" });
+    }
+    // Wait 1 second → 2 units leak out
+    println!("\n    ...1 second passes (2 units leak out)...\n");
+    for i in 1..=3 {
+        let allowed = lb.allow("client", 1000);
+        println!("    Req #{} at t=1000ms: {}{}", i + 7,
+            if allowed { "✓" } else { "✗ REJECTED" },
+            if !allowed { " ← only 2 leaked, bucket full again" } else { "" });
+    }
+    println!("\n    Leaky bucket: strict fixed output rate. No bursts.\n");
+
+    // --- Side by side summary ---
+    println!("  ── Summary ──\n");
+    println!("    ┌──────────────────┬─────────┬──────────┬────────┬───────────┐");
+    println!("    │ Algorithm        │ Bursts? │ Accurate │ Memory │ Latency   │");
+    println!("    ├──────────────────┼─────────┼──────────┼────────┼───────────┤");
+    println!("    │ Token Bucket     │ ✓ Yes   │ ✓ Yes    │ O(1)   │ None      │ ← best");
+    println!("    │ Fixed Window     │ ✗ Boundary│ ✗ No   │ O(1)   │ None      │");
+    println!("    │ Sliding Log      │ ✗ No    │ ✓ Yes    │ O(n)   │ None      │");
+    println!("    │ Leaky Bucket     │ ✗ No    │ ✓ Yes    │ O(1)   │ Queue wait│");
+    println!("    └──────────────────┴─────────┴──────────┴────────┴───────────┘\n");
 }
 
 // =============================================================================
@@ -427,9 +777,17 @@ fn main() {
     println!("━━━ 1. Reverse Proxy — Path-Based Routing ━━━");
     demo_reverse_proxy();
 
+    // Demo 1b: Real Proxy — Pingora
+    println!("━━━ 1b. Real Proxy — Cloudflare Pingora ━━━");
+    demo_pingora_proxy();
+
     // Demo 2: Rate Limiting
     println!("━━━ 2. Rate Limiting — Token Bucket ━━━");
     demo_rate_limiting();
+
+    // Demo 2b: All Rate Limiting Algorithms Compared
+    println!("━━━ 2b. Rate Limiting — Algorithm Comparison ━━━");
+    demo_rate_limiting_comparison();
 
     // Demo 3: Auth Middleware
     println!("━━━ 3. Authentication — API Key Validation ━━━");

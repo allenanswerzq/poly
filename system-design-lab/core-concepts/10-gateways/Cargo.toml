@@ -19,3 +19,5 @@ http-body-util = "0.1"
 bytes = { workspace = true }
 rand = { workspace = true }
 dashmap = { workspace = true }
+pingora = { version = "0.8", features = ["proxy", "lb"] }
+async-trait = "0.1"
