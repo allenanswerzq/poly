@@ -359,40 +359,179 @@ ONE connection:
 
 ## WebSocket
 
+### Half-Duplex vs Full-Duplex — Why WebSocket Exists
+
+Normal HTTP is **request-response** (half-duplex): the client sends a request, then waits, then receives a response. The server can **never** initiate a message — it can only respond to client requests.
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      WebSocket Protocol                          │
-│                                                                  │
-│  Client                               Server                     │
-│     │                                    │                       │
-│     │──── HTTP Upgrade Request ─────────►│                       │
-│     │     Connection: Upgrade            │                       │
-│     │     Upgrade: websocket             │                       │
-│     │                                    │                       │
-│     │◄─── HTTP 101 Switching ────────────│                       │
-│     │                                    │                       │
-│     │═══════ Full-duplex channel ════════│                       │
-│     │         (persistent)               │                       │
-│     │                                    │                       │
-│     │──────► Message ◄──────────────────│                       │
-│     │◄────── Message ─────────►         │                       │
-│     │                                    │                       │
-│                                                                  │
-│  Use cases:                                                      │
-│  • Real-time chat                                               │
-│  • Live updates (stock prices, sports)                          │
-│  • Collaborative editing                                        │
-│  • Gaming                                                       │
-└─────────────────────────────────────────────────────────────────┘
+HTTP/1.1 (half-duplex, sequential):
+  Client: [send req ──►] [wait...] [◄── recv resp] [send req ──►] [wait...]
+  Server:                 [process]  [send resp ──►]
+
+HTTP/2 (half-duplex, multiplexed):
+  Client: [send req1 ──►] [send req2 ──►]
+  Server: [◄── resp1] [◄── resp2]         (still request-response, just overlapping)
+
+WebSocket (full-duplex):
+  Client: [send msg1 ──►] [send msg2 ──►] [◄── recv msg3] [send msg4 ──►]
+  Server: [◄── recv msg1] [send msg3 ──►] [◄── recv msg2] [send msg5 ──►]
+           ^ both sides send whenever they want, independently
 ```
+
+| Protocol | Model | Server can initiate? | Directions |
+|---|---|---|---|
+| HTTP/1.1 | Request → Response (sequential) | No | One at a time |
+| HTTP/2 | Request → Response (multiplexed) | No (server push is dead) | Multiple pairs overlap |
+| WebSocket | Messages (no req/resp pattern) | **Yes** | Both directions, anytime |
+| SSE | Server → Client stream | **Yes** (one-way only) | Server → Client only |
+
+The key difference: in HTTP, the server is **always reacting** to client requests. In WebSocket, the server can say "hey, new chat message arrived" without the client asking first.
+
+### WebSocket Lifecycle: HTTP → WebSocket → Frames
+
+WebSocket starts as an HTTP/1.1 request, then **hijacks the TCP connection**:
+
+```
+Phase 1: HTTP/1.1 Upgrade Handshake
+─────────────────────────────────────
+Client → Server:
+  GET /chat HTTP/1.1              ← regular HTTP/1.1 request
+  Host: example.com
+  Upgrade: websocket              ← "please switch to WebSocket"
+  Connection: Upgrade
+  Sec-WebSocket-Key: dGhlIH...    ← random base64 nonce
+  Sec-WebSocket-Version: 13
+
+Server → Client:
+  HTTP/1.1 101 Switching Protocols  ← "OK, switching now"
+  Upgrade: websocket
+  Connection: Upgrade
+  Sec-WebSocket-Accept: s3pP...    ← SHA1(client_key + magic_GUID), base64
+
+Phase 2: WebSocket Frames (HTTP is GONE — same TCP socket, new protocol)
+─────────────────────────────────────
+  Client ←══════ full-duplex ══════► Server
+  Either side can send frames at any time.
+```
+
+After the `101 Switching Protocols` response, HTTP is gone forever. The same TCP socket now speaks the WebSocket binary frame protocol. The connection stays open indefinitely until either side sends a Close frame.
+
+The `Upgrade` mechanism only exists in HTTP/1.1. HTTP/2 has a different way (`CONNECT` with `:protocol` pseudo-header), but in practice almost all WebSocket connections use the HTTP/1.1 upgrade, even in 2026.
+
+### WebSocket Frame Format
+
+```
+Byte 0:  [FIN(1) RSV(3) OPCODE(4)]
+Byte 1:  [MASK(1) LENGTH(7)]
+         If LENGTH == 126: next 2 bytes = actual length
+         If LENGTH == 127: next 8 bytes = actual length
+If MASK: 4 bytes masking key, payload XOR'd with mask
+
+Opcodes: 0x1=Text  0x2=Binary  0x8=Close  0x9=Ping  0xA=Pong
+```
+
+Key rules from RFC 6455:
+- **Client → Server frames MUST be masked** (XOR with random 4-byte key)
+- **Server → Client frames are NOT masked**
+- This asymmetry prevents cache poisoning attacks on proxies
+
+Use cases: real-time chat, live updates (stock prices, sports), collaborative editing, gaming.
 
 ## Long Polling vs SSE vs WebSocket
 
-| Method | Direction | Use Case | Overhead |
-|--------|-----------|----------|----------|
-| **Long Polling** | Server → Client | Legacy real-time | High (reconnect) |
-| **SSE** | Server → Client | Notifications | Low |
-| **WebSocket** | Bidirectional | Chat, gaming | Very low |
+All three are built **on top of HTTP/1.1** — they're not separate transport protocols:
+
+- **Long Polling**: A normal HTTP/1.1 request where the server delays the response until new data is available. When it responds, the client immediately sends another request. It's just slow HTTP.
+- **SSE**: A normal HTTP/1.1 response with `Content-Type: text/event-stream` that **never closes**. The server keeps writing `data: ...\n\n` lines. It's just a long-lived HTTP response.
+- **WebSocket**: Starts as an HTTP/1.1 `Upgrade` request → `101 Switching Protocols`, then the TCP socket switches to the WebSocket binary frame protocol. HTTP is gone after the handshake.
+
+```
+            HTTP/1.1 request
+                  │
+    ┌─────────────┼───────────────┬──────────────────┐
+    ▼             ▼               ▼                  ▼
+Long Polling     SSE          WebSocket           Normal HTTP
+(delayed resp)  (never-ending  (101 Upgrade →      (req → resp
+ then reconnect) response)     binary frames)       done)
+```
+
+| Method | Transport | Direction | Server initiates? | Overhead | Use Case |
+|--------|-----------|-----------|-------------------|----------|----------|
+| **Long Polling** | HTTP/1.1 request loop | Server → Client | No (client polls) | High (reconnect) | Legacy real-time |
+| **SSE** | HTTP/1.1 long-lived response | Server → Client | Yes | Low (~10 bytes/event) | Notifications, feeds |
+| **WebSocket** | HTTP/1.1 upgrade → WS frames | Bidirectional | Yes | Very low (2-6 bytes) | Chat, gaming |
+
+## gRPC (Google Remote Procedure Call)
+
+gRPC is an RPC framework that runs over **HTTP/2**. Instead of REST (send JSON over HTTP), you define services in Protocol Buffers (protobuf) and call remote functions as if they were local.
+
+### Why gRPC Over REST?
+
+| | REST (JSON over HTTP) | gRPC (Protobuf over HTTP/2) |
+|---|---|---|
+| **Serialization** | JSON (text, ~2x larger) | Protobuf (binary, compact) |
+| **Schema** | OpenAPI/Swagger (optional) | `.proto` file (mandatory, typed) |
+| **Transport** | HTTP/1.1 or HTTP/2 | HTTP/2 only |
+| **Code generation** | Manual or codegen tools | Built-in (protoc generates client/server) |
+| **Streaming** | Chunked transfer or SSE | 4 modes (see below) |
+| **Browser support** | Native | Needs gRPC-Web proxy |
+| **Best for** | Public APIs, simple CRUD | Internal microservices, high-throughput |
+
+### How gRPC Works on the Wire
+
+gRPC is HTTP/2 with a specific framing convention:
+
+```
+1. Client sends HTTP/2 HEADERS frame:
+   :method = POST
+   :path = /mypackage.MyService/GetUser        ← service/method name
+   content-type = application/grpc
+   grpc-encoding = identity (or gzip)
+
+2. Client sends HTTP/2 DATA frame(s):
+   [1 byte: compressed flag] [4 bytes: message length] [N bytes: protobuf message]
+
+   Example: [0x00] [0x00 0x00 0x00 0x0A] [protobuf bytes...]
+            not compressed   10 bytes      the actual request
+
+3. Server sends HTTP/2 HEADERS + DATA frames (same format)
+
+4. Server sends trailing HEADERS:
+   grpc-status = 0 (OK)
+   grpc-message = "" (or error description)
+```
+
+The key insight: **gRPC is just HTTP/2 + protobuf + a 5-byte message prefix**. There's no new transport protocol — it reuses all of HTTP/2's features (multiplexing, flow control, HPACK).
+
+### Four Streaming Modes
+
+```
+1. Unary RPC (normal request-response):
+   Client ──[request]──► Server ──[response]──► Client
+
+2. Server streaming:
+   Client ──[request]──► Server ──[response1]──►
+                                 ──[response2]──►
+                                 ──[response3]──► Client
+
+3. Client streaming:
+   Client ──[request1]──►
+           ──[request2]──►
+           ──[request3]──► Server ──[response]──► Client
+
+4. Bidirectional streaming:
+   Client ──[msg1]──► Server ──[msg2]──► Client
+          ──[msg3]──►        ──[msg4]──►
+           (both directions independently, like WebSocket but over HTTP/2)
+```
+
+All four modes use the same HTTP/2 stream — they just differ in how many DATA frames each side sends before finishing.
+
+### When to Use gRPC vs REST
+
+- **REST**: Public APIs (browser-friendly), simple CRUD, when human-readable responses matter
+- **gRPC**: Internal microservice-to-microservice calls, latency-sensitive systems, when you need streaming, strong typing, or high throughput
+- **Both**: Many companies expose REST externally and use gRPC internally (with a gateway that translates)
 
 ## TLS (Transport Layer Security)
 
