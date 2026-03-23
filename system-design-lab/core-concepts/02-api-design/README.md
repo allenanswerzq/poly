@@ -188,6 +188,72 @@ Response: 201 Created
 }
 ```
 
+## Stateless API Design
+
+### Why Stateless?
+
+In a stateless design, **each request contains all the information needed to process it**. The server does not store any client session state between requests. This is a core REST constraint and is critical for building scalable systems.
+│
+│ Sticky sessions needed           │ Any server can handle any req
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                   Stateful vs Stateless                              │
+├──────────────────────────────────┬──────────────────────────────────┤
+│          Stateful                │          Stateless               │
+├──────────────────────────────────┼──────────────────────────────────┤
+│ Server remembers client state    │ Each request is self-contained   │
+│ Session stored on server         │ Auth token sent with every req   │
+│ Hard to scale horizontally       │ Easy to scale horizontally       │
+│ Server failure loses state       │ Server failure is transparent    │
+└──────────────────────────────────┴──────────────────────────────────┘
+```
+
+### How It Works
+
+```
+Stateful (problematic):
+  Client ──login──▶ Server A stores session
+  Client ──request──▶ Server B ??? (no session here!)
+
+Stateless (scalable):
+  Client ──request + JWT──▶ Server A ✅
+  Client ──request + JWT──▶ Server B ✅
+  Client ──request + JWT──▶ Server C ✅
+  Any server can handle any request — all context is in the request itself.
+```
+
+### What Goes in the Request?
+
+| Concern | Stateful Approach | Stateless Approach |
+|---------|-------------------|--------------------|
+| **Authentication** | Server-side session lookup | JWT or opaque token in `Authorization` header |
+| **User preferences** | Stored in server memory | Sent by client or fetched from DB per request |
+| **Pagination state** | Server remembers cursor | Client sends cursor token each request |
+| **Shopping cart** | Server-side session | Stored client-side or in DB, keyed by user ID |
+
+### Benefits for System Design
+
+1. **Horizontal scaling**: Add/remove servers freely behind a load balancer — no sticky sessions required
+2. **Fault tolerance**: If a server dies, the next request goes to any healthy server with no state lost
+3. **Cacheability**: Stateless requests with the same parameters always produce the same result, making caching straightforward
+4. **Simpler infrastructure**: No need for session replication, shared session stores, or session affinity at the load balancer
+
+### Trade-offs
+
+- **Larger requests**: Every request carries auth tokens, context, etc.
+- **Repeated work**: Server may re-validate tokens or re-fetch user data on each request
+- **Client complexity**: Client must manage and send all required context
+
+### When Statelessness Isn't Enough
+
+Some systems need server-side state (e.g., WebSocket connections, real-time collaboration). In these cases:
+- Use a **shared state store** (Redis, Memcached) rather than local server memory
+- Keep the stateless principle for your REST APIs and use separate stateful services only where truly needed
+
+### Interview Tip
+
+> When designing an API in an interview, always **explicitly state that your API is stateless** and explain how authentication (e.g., JWT) and context travel with each request. This signals to the interviewer that you understand horizontal scalability.
+
 ## Common Mistakes to Avoid
 
 1. **Using verbs in URLs**: `/getTweets` → `/tweets`
