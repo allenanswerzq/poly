@@ -5,6 +5,7 @@ members = [
     "core-concepts/04-caching",
     "core-concepts/06-consistent-hashing",
     "core-concepts/08-database-indexing",
+    "core-concepts/10-gateways",
     "real-designs/01-url-shortener",
     "real-designs/02-rate-limiter",
     "real-designs/03-distributed-cache",
