@@ -147,6 +147,37 @@ async fn delete_user(State(state): State<AppState>, Path(id): Path<String>) -> S
 }
 
 // ── Pagination handler ───────────────────────────────────────────────────────
+//
+// OFFSET vs CURSOR pagination in SQL:
+//
+// OFFSET (simple but broken at scale):
+//   Page 1: SELECT * FROM users ORDER BY id LIMIT 3 OFFSET 0;
+//   Page 2: SELECT * FROM users ORDER BY id LIMIT 3 OFFSET 3;
+//   Page N: SELECT * FROM users ORDER BY id LIMIT 3 OFFSET 3*N;
+//
+//   Problem 1: OFFSET 1000000 scans 1M index entries — O(N), slow!
+//   Problem 2: INSERT during pagination causes duplicates/skips:
+//     Page 1: [Alice, Bob, Carol]
+//     -- INSERT 'Aiden' (sorts before Bob) --
+//     Page 2: [Carol, Dave, Eve]  ← Carol DUPLICATED!
+//     Why: everything shifted by 1, OFFSET 3 now points to Carol.
+//
+// CURSOR (production-grade, what we implement here):
+//   Page 1: SELECT * FROM users ORDER BY id LIMIT 3;
+//           → [Alice, Bob, Carol], cursor = 'carol_id'
+//
+//   Page 2: SELECT * FROM users
+//           WHERE id > 'carol_id'   ← B-tree seek: O(log N) ~23 comparisons
+//           ORDER BY id LIMIT 3;
+//           → [Dave, Eve, Frank]
+//
+//   INSERT 'Aiden' doesn't matter — WHERE id > 'carol_id' always starts
+//   after Carol. No duplicates, no skips.
+//
+//   Performance:
+//     OFFSET 1M = walk 1,000,000 index entries (slow)
+//     WHERE id > cursor = 1 B-tree seek ~23 comparisons for 10M rows (fast)
+//     Cursor is O(log N), offset is O(N). Huge difference at scale.
 
 #[derive(Deserialize)]
 struct PaginationParams {
@@ -154,20 +185,28 @@ struct PaginationParams {
     limit: Option<usize>,
 }
 
+// This implements cursor-based pagination.
+// SQL equivalent: SELECT * FROM users WHERE id > :cursor ORDER BY id LIMIT :limit;
 async fn list_users_paginated(State(state): State<AppState>, Query(params): Query<PaginationParams>) -> Json<Value> {
     let users = state.users.read().unwrap();
     let limit = params.limit.unwrap_or(3);
 
+    // Find where to start: after the cursor item
+    // SQL: WHERE id > :cursor (B-tree seek, O(log N))
     let start = match &params.cursor {
         Some(cursor) => users.iter().position(|u| u.id == *cursor).map(|p| p + 1).unwrap_or(0),
-        None => 0,
+        None => 0, // no cursor = first page (no WHERE clause)
     };
 
+    // Take `limit` items from that position
+    // SQL: LIMIT :limit
     let page: Vec<&User> = users.iter().skip(start).take(limit).collect();
+
+    // Next cursor = last item's ID (client sends this back for next page)
     let next_cursor = if start + limit < users.len() {
         page.last().map(|u| u.id.clone())
     } else {
-        None
+        None // no more pages
     };
 
     Json(json!({
@@ -378,7 +417,8 @@ fn demo_pagination() {
     }
 
     println!("\n  Cursor-based: no duplicates/skips when data changes.");
-    println!("  Each page uses the last item's ID as the cursor.\n");
+    println!("  Each page uses the last item's ID as the cursor.");
+    println!("  See comments on list_users_paginated() for SQL equivalents.\n");
 }
 
 fn demo_idempotency() {
