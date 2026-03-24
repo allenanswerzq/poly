@@ -31,6 +31,7 @@ members = [
     "real-designs/21-collaborative-editor",
     "real-designs/22-file-storage",
     "real-designs/23-code-executor",
+    "real-designs/24-live-streaming",
     "key-technologies/redis",
     "key-technologies/zookeeper",
     "patterns/scaling-reads",

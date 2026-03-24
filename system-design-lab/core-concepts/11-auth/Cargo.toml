@@ -1,0 +1,18 @@
+[package]
+name = "auth"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "auth"
+path = "src/main.rs"
+
+[dependencies]
+jsonwebtoken = "9"
+bcrypt = "0.16"
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
