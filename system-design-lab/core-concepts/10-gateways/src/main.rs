@@ -197,7 +197,7 @@ fn demo_pingora_proxy() {
         }
     }
 
-    // Start Pingora in a background thread (run_forever blocks + calls exit)
+    // Start Pingora in a background thread
     thread::spawn(|| {
         let mut server = Server::new(None).unwrap();
         server.bootstrap();
@@ -257,6 +257,427 @@ fn demo_pingora_proxy() {
 
     println!("\n    This is Cloudflare's Pingora — the same framework powering their edge.");
     println!("    Path routing, load balancing, connection pooling, all built-in.\n");
+}
+
+// =============================================================================
+// 1c. Pingora with Authentication Middleware
+// =============================================================================
+
+fn demo_pingora_auth() {
+    use pingora::prelude::*;
+    use pingora::proxy::{ProxyHttp, Session};
+    use pingora::upstreams::peer::HttpPeer;
+    use pingora::lb::{selection::RoundRobin, LoadBalancer};
+    use pingora::http::ResponseHeader;
+    use bytes::Bytes;
+
+    println!("\n  ═══ demo_pingora_auth ═══\n");
+    println!("  Pingora proxy with API key authentication middleware.\n");
+
+    // Valid API keys → user IDs (in production: Redis/DB lookup)
+    static API_KEYS: &[(&str, &str)] = &[
+        ("sk-valid-key-123", "user-42"),
+        ("sk-admin-key-456", "admin-1"),
+    ];
+
+    struct AuthProxy {
+        user_upstream: Arc<LoadBalancer<RoundRobin>>,
+        order_upstream: Arc<LoadBalancer<RoundRobin>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyHttp for AuthProxy {
+        // Per-request context: store the authenticated user ID so we can
+        // forward it to the backend in upstream_request_filter
+        type CTX = Option<String>;
+        fn new_ctx(&self) -> Self::CTX { None }
+
+        /// Auth gate — runs BEFORE routing. Rejects unauthenticated requests.
+        /// Return Ok(true) = response already sent, stop processing.
+        /// Return Ok(false) = continue to upstream_peer + forward.
+        async fn request_filter(
+            &self,
+            session: &mut Session,
+            ctx: &mut Self::CTX,
+        ) -> Result<bool> {
+            let api_key = session.req_header()
+                .headers
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+
+            match API_KEYS.iter().find(|(k, _)| *k == api_key) {
+                Some((_, user_id)) => {
+                    // Authenticated — store user_id in context for later
+                    *ctx = Some(user_id.to_string());
+                    Ok(false) // continue to upstream
+                }
+                None => {
+                    // Not authenticated — send 401 response directly
+                    let body = b"{\"error\":\"unauthorized\",\"hint\":\"set X-Api-Key header\"}";
+                    let mut resp = ResponseHeader::build(401, Some(2))?;
+                    resp.insert_header("Content-Type", "application/json")?;
+                    resp.insert_header("Content-Length", body.len().to_string())?;
+                    session.write_response_header(Box::new(resp), false).await?;
+                    session.write_response_body(Some(Bytes::from_static(body)), true).await?;
+                    Ok(true) // response sent, stop here
+                }
+            }
+        }
+
+        /// Route to the correct upstream based on path
+        async fn upstream_peer(
+            &self,
+            session: &mut Session,
+            _ctx: &mut Self::CTX,
+        ) -> Result<Box<HttpPeer>> {
+            let path = session.req_header().uri.path();
+
+            let upstream = if path.starts_with("/api/users") {
+                self.user_upstream.select(b"", 256)
+            } else if path.starts_with("/api/orders") {
+                self.order_upstream.select(b"", 256)
+            } else {
+                None
+            };
+
+            let upstream =
+                upstream.ok_or_else(|| pingora::Error::new_str("no route matched"))?;
+
+            let peer = HttpPeer::new(upstream, false, String::new());
+            Ok(Box::new(peer))
+        }
+
+        /// Modify request before sending to upstream — add auth headers
+        async fn upstream_request_filter(
+            &self,
+            _session: &mut Session,
+            upstream_request: &mut pingora::http::RequestHeader,
+            ctx: &mut Self::CTX,
+        ) -> Result<()> {
+            // Rewrite: /api/users/1 → /users/1
+            let path = upstream_request.uri.path().to_string();
+            if let Some(rest) = path.strip_prefix("/api") {
+                let new_uri = rest.parse().unwrap();
+                upstream_request.set_uri(new_uri);
+            }
+
+            // Forward the authenticated user ID to the backend
+            // Backend trusts this header because only the gateway sets it
+            if let Some(user_id) = ctx {
+                upstream_request.insert_header("X-Authenticated-User", user_id.as_str())?;
+            }
+
+            upstream_request.insert_header("X-Forwarded-By", "pingora-gateway")?;
+            Ok(())
+        }
+    }
+
+    // Start Pingora auth proxy on a DIFFERENT port (:6189) so it doesn't
+    // conflict with the basic proxy on :6188
+    thread::spawn(|| {
+        let mut server = Server::new(None).unwrap();
+        server.bootstrap();
+
+        let users = LoadBalancer::try_from_iter(["127.0.0.1:9101"]).unwrap();
+        let orders = LoadBalancer::try_from_iter(["127.0.0.1:9102"]).unwrap();
+
+        let proxy = AuthProxy {
+            user_upstream: Arc::new(users),
+            order_upstream: Arc::new(orders),
+        };
+
+        let mut svc = pingora::proxy::http_proxy_service(&server.configuration, proxy);
+        svc.add_tcp("127.0.0.1:6189");
+
+        server.add_service(svc);
+        server.run(pingora::server::RunArgs::default());
+    });
+
+    thread::sleep(Duration::from_secs(2));
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+
+    println!("    Pingora auth proxy on :6189\n");
+
+    // Test 1: No API key → 401
+    match client.get("http://127.0.0.1:6189/api/users/1").send() {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            println!("    No key:      GET /api/users/1    → {} {}", status, body);
+        }
+        Err(e) => println!("    No key:      GET /api/users/1    → ERROR: {}", e),
+    }
+
+    // Test 2: Invalid API key → 401
+    match client.get("http://127.0.0.1:6189/api/users/1")
+        .header("X-Api-Key", "sk-wrong")
+        .send()
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            println!("    Bad key:     GET /api/users/1    → {} {}", status, body);
+        }
+        Err(e) => println!("    Bad key:     GET /api/users/1    → ERROR: {}", e),
+    }
+
+    // Test 3: Valid API key → 200, forwarded to backend
+    match client.get("http://127.0.0.1:6189/api/users/1")
+        .header("X-Api-Key", "sk-valid-key-123")
+        .send()
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            let body: Value = resp.json().unwrap_or_default();
+            println!("    Valid key:   GET /api/users/1    → {} service={:?}",
+                status, body.get("service").unwrap_or(&json!("?")));
+        }
+        Err(e) => println!("    Valid key:   GET /api/users/1    → ERROR: {}", e),
+    }
+
+    // Test 4: Admin key, different route
+    match client.get("http://127.0.0.1:6189/api/orders/42")
+        .header("X-Api-Key", "sk-admin-key-456")
+        .send()
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            let body: Value = resp.json().unwrap_or_default();
+            println!("    Admin key:   GET /api/orders/42  → {} service={:?}",
+                status, body.get("service").unwrap_or(&json!("?")));
+        }
+        Err(e) => println!("    Admin key:   GET /api/orders/42  → ERROR: {}", e),
+    }
+
+    println!("\n    Pingora lifecycle for each request:");
+    println!("    request_filter() → validate API key, reject 401 if invalid");
+    println!("    upstream_peer()  → pick backend based on path");
+    println!("    upstream_request_filter() → rewrite path, add X-Authenticated-User");
+    println!("    Backend never sees unauthenticated traffic.\n");
+}
+
+// =============================================================================
+// 1d. Pingora with Circuit Breaker
+// =============================================================================
+
+// Shared circuit breaker state — tracks failures per backend
+struct PingoraCircuitBreaker {
+    failure_count: AtomicU32,
+    threshold: u32,
+    last_failure: AtomicU64,
+    cooldown_secs: u64,
+    is_open: std::sync::atomic::AtomicBool,
+}
+
+impl PingoraCircuitBreaker {
+    fn new(threshold: u32, cooldown_secs: u64) -> Self {
+        Self {
+            failure_count: AtomicU32::new(0),
+            threshold,
+            last_failure: AtomicU64::new(0),
+            cooldown_secs,
+            is_open: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn check_open(&self) -> bool {
+        if !self.is_open.load(Ordering::Relaxed) {
+            return false;
+        }
+        // Check if cooldown has passed → half-open (allow one try)
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let last = self.last_failure.load(Ordering::Relaxed);
+        if now - last >= self.cooldown_secs {
+            // Cooldown elapsed → transition to half-open
+            self.is_open.store(false, Ordering::Relaxed);
+            self.failure_count.store(0, Ordering::Relaxed);
+            false
+        } else {
+            true // still open
+        }
+    }
+
+    fn record_failure(&self) {
+        let count = self.failure_count.fetch_add(1, Ordering::Relaxed) + 1;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        self.last_failure.store(now, Ordering::Relaxed);
+        if count >= self.threshold {
+            self.is_open.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn record_success(&self) {
+        self.failure_count.store(0, Ordering::Relaxed);
+        self.is_open.store(false, Ordering::Relaxed);
+    }
+}
+
+fn demo_pingora_circuit_breaker() {
+    use pingora::prelude::*;
+    use pingora::proxy::{ProxyHttp, Session};
+    use pingora::upstreams::peer::HttpPeer;
+    use pingora::http::ResponseHeader;
+    use bytes::Bytes;
+
+    println!("\n  ═══ demo_pingora_circuit_breaker ═══\n");
+    println!("  Pingora proxy with circuit breaker — stops forwarding to failing backends.\n");
+
+    // Start a backend that ALWAYS fails (for circuit breaker demo)
+    thread::spawn(|| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let app = axum::Router::new()
+                .route("/data", axum::routing::get(|| async {
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "always down"})))
+                }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:9105").await.unwrap();
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
+    thread::sleep(Duration::from_millis(100));
+
+    // Circuit breaker: open after 2 failures, cooldown 3 seconds
+    let cb: Arc<PingoraCircuitBreaker> = Arc::new(PingoraCircuitBreaker::new(2, 3));
+
+    struct CBProxy {
+        cb: Arc<PingoraCircuitBreaker>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyHttp for CBProxy {
+        type CTX = ();
+        fn new_ctx(&self) -> Self::CTX {}
+
+        /// Before routing: check if circuit is open → return 503 immediately
+        async fn request_filter(
+            &self,
+            session: &mut Session,
+            _ctx: &mut Self::CTX,
+        ) -> Result<bool> {
+            if self.cb.check_open() {
+                // Circuit is OPEN — don't even try the backend
+                let body = b"{\"error\":\"circuit open\",\"message\":\"backend unavailable, try later\"}";
+                let mut resp = ResponseHeader::build(503, Some(2))?;
+                resp.insert_header("Content-Type", "application/json")?;
+                resp.insert_header("Content-Length", body.len().to_string())?;
+                session.write_response_header(Box::new(resp), false).await?;
+                session.write_response_body(Some(Bytes::from_static(body)), true).await?;
+                return Ok(true); // response sent, stop
+            }
+            Ok(false) // circuit closed, continue to upstream
+        }
+
+        /// Route all traffic to the always-failing backend on :9105
+        async fn upstream_peer(
+            &self,
+            _session: &mut Session,
+            _ctx: &mut Self::CTX,
+        ) -> Result<Box<HttpPeer>> {
+            let peer = HttpPeer::new("127.0.0.1:9105", false, String::new());
+            Ok(Box::new(peer))
+        }
+
+        /// After getting a response: check if it was an error
+        async fn response_filter(
+            &self,
+            _session: &mut Session,
+            upstream_response: &mut ResponseHeader,
+            _ctx: &mut Self::CTX,
+        ) -> Result<()> {
+            if upstream_response.status.as_u16() >= 500 {
+                self.cb.record_failure();
+            } else {
+                self.cb.record_success();
+            }
+            Ok(())
+        }
+
+        /// If connection to upstream fails entirely
+        fn fail_to_connect(
+            &self,
+            _session: &mut Session,
+            _peer: &HttpPeer,
+            _ctx: &mut Self::CTX,
+            e: Box<pingora::Error>,
+        ) -> Box<pingora::Error> {
+            self.cb.record_failure();
+            e
+        }
+    }
+
+    let cb_clone = cb.clone();
+
+    thread::spawn(move || {
+        let mut server = Server::new(None).unwrap();
+        server.bootstrap();
+
+        let proxy = CBProxy { cb: cb_clone };
+
+        let mut svc = pingora::proxy::http_proxy_service(&server.configuration, proxy);
+        svc.add_tcp("127.0.0.1:6190");
+
+        server.add_service(svc);
+        server.run(pingora::server::RunArgs::default());
+    });
+
+    thread::sleep(Duration::from_secs(2));
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+
+    println!("    Pingora CB proxy on :6190 → always-failing backend on :9105");
+    println!("    Circuit opens after 2 failures, cooldown 3s\n");
+
+    // Phase 1: CLOSED → failures pile up → circuit OPENS
+    println!("    Phase 1: CLOSED → send requests to failing backend\n");
+    for i in 1..=4 {
+        let is_open = cb.check_open();
+        match client.get("http://127.0.0.1:6190/data").send() {
+            Ok(resp) => {
+                let status = resp.status();
+                let state = if status == 503 { "OPEN→503 (didn't hit backend)" }
+                    else if status.as_u16() >= 500 { "CLOSED→fail (backend returned 500)" }
+                    else { "CLOSED→ok" };
+                println!("    Req #{}: {} [{}]", i, status, state);
+            }
+            Err(e) => println!("    Req #{}: ERROR: {}", i, e),
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Phase 2: Wait for cooldown → circuit transitions to HALF-OPEN
+    println!("\n    Phase 2: Waiting 4s for cooldown (circuit → HALF-OPEN)...\n");
+    thread::sleep(Duration::from_secs(4));
+
+    // Phase 3: HALF-OPEN → try one request (backend still fails → re-opens)
+    for i in 5..=7 {
+        let is_open = cb.check_open();
+        match client.get("http://127.0.0.1:6190/data").send() {
+            Ok(resp) => {
+                let status = resp.status();
+                let state = if is_open && status == 503 { "OPEN→503" }
+                    else if status.as_u16() >= 500 { "HALF-OPEN→fail (re-opens circuit)" }
+                    else { "HALF-OPEN→ok (circuit closes)" };
+                println!("    Req #{}: {} [{}]", i, status, state);
+            }
+            Err(e) => println!("    Req #{}: ERROR: {}", i, e),
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    println!("\n    Pingora lifecycle:");
+    println!("    request_filter()  → check circuit state, return 503 if OPEN");
+    println!("    upstream_peer()   → route to backend (only if CLOSED)");
+    println!("    response_filter() → track 5xx failures, open circuit if threshold hit");
+    println!("    fail_to_connect() → also counts as failure\n");
+    println!("    States: CLOSED (forward) → OPEN (reject 503) → HALF-OPEN (try one)\n");
 }
 
 // =============================================================================
@@ -780,6 +1201,14 @@ fn main() {
     // Demo 1b: Real Proxy — Pingora
     println!("━━━ 1b. Real Proxy — Cloudflare Pingora ━━━");
     demo_pingora_proxy();
+
+    // Demo 1c: Pingora with Auth
+    println!("━━━ 1c. Pingora Auth — API Key Middleware ━━━");
+    demo_pingora_auth();
+
+    // Demo 1d: Pingora with Circuit Breaker
+    println!("━━━ 1d. Pingora Circuit Breaker ━━━");
+    demo_pingora_circuit_breaker();
 
     // Demo 2: Rate Limiting
     println!("━━━ 2. Rate Limiting — Token Bucket ━━━");
