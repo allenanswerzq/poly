@@ -1,37 +1,37 @@
 use rusqlite::Connection;
 
 // =============================================================================
-// Hierarchical Data — storing tree structures in flat SQL tables
+// Hierarchical Data — storing comment reply threads in SQL
 //
-//   Category tree:
-//     Electronics
-//     ├── Phones
-//     │   ├── Apple
-//     │   └── Samsung
-//     └── Laptops
-//         ├── Gaming
-//         └── Business
+//   Post: "What's the best database?"
+//   ├── #1 (Alice): "PostgreSQL!"
+//   │   ├── #3 (Bob): "Why not MySQL?"
+//   │   │   └── #5 (Alice): "Better JSONB support"
+//   │   └── #4 (Charlie): "+1 for Postgres"
+//   └── #2 (Dave): "Depends on the use case"
+//       └── #6 (Eve): "This. Always ask about access patterns first."
 //
 //   Option 1: Adjacency List (parent_id)
-//     id │ name        │ parent_id
-//     ───┼─────────────┼──────────
-//      1 │ Electronics │ NULL
-//      2 │ Phones      │ 1
-//      4 │ Apple       │ 2
-//     → Simple, but finding ALL descendants needs WITH RECURSIVE
+//     id │ parent_id │ author  │ content
+//     ───┼───────────┼─────────┼─────────────────────
+//      1 │ NULL      │ Alice   │ "PostgreSQL!"
+//      3 │ 1         │ Bob     │ "Why not MySQL?"
+//      5 │ 3         │ Alice   │ "Better JSONB support"
+//     → Simple. Direct replies = WHERE parent_id = 1
+//     → Full thread = WITH RECURSIVE
 //
 //   Option 2: Materialized Path
-//     id │ name        │ path
-//     ───┼─────────────┼──────────
-//      1 │ Electronics │ /1/
-//      2 │ Phones      │ /1/2/
-//      4 │ Apple       │ /1/2/4/
-//     → Fast subtree queries (WHERE path LIKE '/1/2/%')
-//     → But moving a subtree = rewrite all descendants' paths
+//     id │ path     │ author  │ content
+//     ───┼──────────┼─────────┼─────────────────────
+//      1 │ /1/      │ Alice   │ "PostgreSQL!"
+//      3 │ /1/3/    │ Bob     │ "Why not MySQL?"
+//      5 │ /1/3/5/  │ Alice   │ "Better JSONB support"
+//     → All replies under #1: WHERE path LIKE '/1/%'
+//     → ORDER BY path gives you threaded order for free
 // =============================================================================
 
 pub fn demo() {
-    println!("\n  ═══ Hierarchical Data (Tree Structures) ═══\n");
+    println!("\n  ═══ Hierarchical Data (Comment Threads) ═══\n");
 
     let db = Connection::open_in_memory().unwrap();
 
@@ -39,106 +39,143 @@ pub fn demo() {
     println!("    ── Option 1: Adjacency List (parent_id) ──\n");
 
     db.execute_batch("
-        CREATE TABLE categories_adj (
+        CREATE TABLE comments_adj (
             id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            parent_id INTEGER REFERENCES categories_adj(id)
+            post_id INTEGER NOT NULL,
+            parent_id INTEGER REFERENCES comments_adj(id),
+            author TEXT NOT NULL,
+            content TEXT NOT NULL,
+            reply_count INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        INSERT INTO categories_adj VALUES (1, 'Electronics', NULL);
-        INSERT INTO categories_adj VALUES (2, 'Phones',      1);
-        INSERT INTO categories_adj VALUES (3, 'Laptops',     1);
-        INSERT INTO categories_adj VALUES (4, 'Apple',       2);
-        INSERT INTO categories_adj VALUES (5, 'Samsung',     2);
-        INSERT INTO categories_adj VALUES (6, 'Gaming',      3);
-        INSERT INTO categories_adj VALUES (7, 'Business',    3);
+        CREATE INDEX idx_comments_post ON comments_adj(post_id, parent_id);
+
+        -- Post 10: 'What is the best database?'
+        INSERT INTO comments_adj (id, post_id, parent_id, author, content) VALUES
+            (1, 10, NULL, 'Alice',   'PostgreSQL!'),
+            (2, 10, NULL, 'Dave',    'Depends on the use case'),
+            (3, 10, 1,    'Bob',     'Why not MySQL?'),
+            (4, 10, 1,    'Charlie', '+1 for Postgres'),
+            (5, 10, 3,    'Alice',   'Better JSONB support'),
+            (6, 10, 2,    'Eve',     'This. Always ask about access patterns first.');
+
+        -- Pre-compute reply counts
+        UPDATE comments_adj SET reply_count = (
+            SELECT COUNT(*) FROM comments_adj c2 WHERE c2.parent_id = comments_adj.id
+        );
     ").unwrap();
 
-    // Direct children
-    println!("    SQL: SELECT * FROM categories_adj WHERE parent_id = 1\n");
-    let mut stmt = db.prepare(
-        "SELECT name FROM categories_adj WHERE parent_id = 1"
+    // 1) Load top-level comments for a post
+    println!("    Query: top-level comments for post 10");
+    println!("    SQL: WHERE post_id = 10 AND parent_id IS NULL\n");
+    let mut stmt: rusqlite::Statement<'_> = db.prepare(
+        "SELECT id, author, content, reply_count FROM comments_adj
+         WHERE post_id = 10 AND parent_id IS NULL ORDER BY id"
     ).unwrap();
-    let children: Vec<String> = stmt.query_map([], |r| r.get(0))
-        .unwrap().filter_map(|r| r.ok()).collect();
-    println!("    Direct children of Electronics: {}\n", children.join(", "));
-
-    // ALL descendants using recursive CTE (WITH RECURSIVE)
-    println!("    SQL: WITH RECURSIVE to find all descendants:\n");
-    let mut stmt = db.prepare("
-        WITH RECURSIVE descendants AS (
-            SELECT id, name, parent_id, 1 AS depth
-            FROM categories_adj WHERE parent_id = 1
-            UNION ALL
-            SELECT c.id, c.name, c.parent_id, d.depth + 1
-            FROM categories_adj c
-            JOIN descendants d ON c.parent_id = d.id
-        )
-        SELECT name, depth FROM descendants ORDER BY depth, name
-    ").unwrap();
     let rows: Vec<String> = stmt.query_map([], |row| {
-        let depth: i64 = row.get(1)?;
-        let indent = "  ".repeat(depth as usize);
-        Ok(format!("    {}→ {} (depth {})", indent, row.get::<_, String>(0)?, depth))
+        Ok(format!("    #{} {}: \"{}\" ({} replies)",
+            row.get::<_, i64>(0)?, row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
     }).unwrap().filter_map(|r| r.ok()).collect();
     for row in &rows { println!("{}", row); }
 
-    // Path from root to a leaf
-    println!("\n    SQL: Walk up parent_id chain (path to 'Apple'):\n");
+    // 2) Click "show replies" on comment #1
+    println!("\n    Query: replies to comment #1 (click 'show replies')");
+    println!("    SQL: WHERE parent_id = 1\n");
+    let mut stmt = db.prepare(
+        "SELECT id, author, content, reply_count FROM comments_adj
+         WHERE parent_id = 1 ORDER BY id"
+    ).unwrap();
+    let rows: Vec<String> = stmt.query_map([], |row| {
+        Ok(format!("      └── #{} {}: \"{}\" ({} replies)",
+            row.get::<_, i64>(0)?, row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
+    }).unwrap().filter_map(|r| r.ok()).collect();
+    for row in &rows { println!("{}", row); }
+
+    // 3) Full thread with recursive CTE
+    println!("\n    Query: full threaded view (WITH RECURSIVE)\n");
     let mut stmt = db.prepare("
-        WITH RECURSIVE path(id, name, parent_id, depth) AS (
-            SELECT id, name, parent_id, 0 FROM categories_adj WHERE name = 'Apple'
+        WITH RECURSIVE thread AS (
+            SELECT id, author, content, parent_id, 0 AS depth
+            FROM comments_adj WHERE post_id = 10 AND parent_id IS NULL
             UNION ALL
-            SELECT c.id, c.name, c.parent_id, p.depth + 1
-            FROM categories_adj c
-            JOIN path p ON c.id = p.parent_id
+            SELECT c.id, c.author, c.content, c.parent_id, t.depth + 1
+            FROM comments_adj c
+            JOIN thread t ON c.parent_id = t.id
         )
-        SELECT name FROM path ORDER BY depth DESC
+        SELECT id, author, content, depth FROM thread ORDER BY id
     ").unwrap();
-    let path: Vec<String> = stmt.query_map([], |r| r.get(0))
-        .unwrap().filter_map(|r| r.ok()).collect();
-    println!("    Path: {}\n", path.join(" → "));
+    let rows: Vec<String> = stmt.query_map([], |row| {
+        let depth: i64 = row.get(3)?;
+        let indent = "  ".repeat(depth as usize);
+        let prefix = if depth > 0 { "└── " } else { "" };
+        Ok(format!("    {}{}#{} {}: \"{}\"",
+            indent, prefix,
+            row.get::<_, i64>(0)?, row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?))
+    }).unwrap().filter_map(|r| r.ok()).collect();
+    for row in &rows { println!("{}", row); }
+
+    // 4) Walk up parent chain — "show context" for a deep reply
+    println!("\n    Query: ancestor chain for reply #5 ('show context')");
+    println!("    SQL: WITH RECURSIVE ... walk up parent_id\n");
+    let mut stmt = db.prepare("
+        WITH RECURSIVE ancestors(id, author, content, parent_id, depth) AS (
+            SELECT id, author, content, parent_id, 0 FROM comments_adj WHERE id = 5
+            UNION ALL
+            SELECT c.id, c.author, c.content, c.parent_id, a.depth + 1
+            FROM comments_adj c
+            JOIN ancestors a ON c.id = a.parent_id
+        )
+        SELECT id, author, content FROM ancestors ORDER BY depth DESC
+    ").unwrap();
+    let path: Vec<String> = stmt.query_map([], |row| {
+        Ok(format!("#{} {}: \"{}\"",
+            row.get::<_, i64>(0)?, row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?))
+    }).unwrap().filter_map(|r| r.ok()).collect();
+    println!("    {}\n", path.join(" → "));
 
     // ── Option 2: Materialized Path ──
     println!("    ── Option 2: Materialized Path ──\n");
 
     db.execute_batch("
-        CREATE TABLE categories_path (
+        CREATE TABLE comments_path (
             id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            path TEXT NOT NULL  -- e.g., '/1/2/4/'
+            post_id INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            author TEXT NOT NULL,
+            content TEXT NOT NULL
         );
-        INSERT INTO categories_path VALUES (1, 'Electronics', '/1/');
-        INSERT INTO categories_path VALUES (2, 'Phones',      '/1/2/');
-        INSERT INTO categories_path VALUES (3, 'Laptops',     '/1/3/');
-        INSERT INTO categories_path VALUES (4, 'Apple',       '/1/2/4/');
-        INSERT INTO categories_path VALUES (5, 'Samsung',     '/1/2/5/');
-        INSERT INTO categories_path VALUES (6, 'Gaming',      '/1/3/6/');
-        INSERT INTO categories_path VALUES (7, 'Business',    '/1/3/7/');
+        INSERT INTO comments_path VALUES (1, 10, '/1/',      'Alice',   'PostgreSQL!');
+        INSERT INTO comments_path VALUES (2, 10, '/2/',      'Dave',    'Depends on the use case');
+        INSERT INTO comments_path VALUES (3, 10, '/1/3/',    'Bob',     'Why not MySQL?');
+        INSERT INTO comments_path VALUES (4, 10, '/1/4/',    'Charlie', '+1 for Postgres');
+        INSERT INTO comments_path VALUES (5, 10, '/1/3/5/',  'Alice',   'Better JSONB support');
+        INSERT INTO comments_path VALUES (6, 10, '/2/6/',    'Eve',     'This. Always ask about access patterns first.');
     ").unwrap();
 
-    // Find all descendants with simple LIKE query — no recursion needed!
-    println!("    SQL: SELECT * FROM categories_path WHERE path LIKE '/1/2/%'\n");
+    // All replies under comment #1 — just a LIKE prefix query, no recursion
+    println!("    All replies under comment #1:");
+    println!("    SQL: WHERE path LIKE '/1/%' ORDER BY path\n");
     let mut stmt = db.prepare(
-        "SELECT name, path FROM categories_path WHERE path LIKE '/1/2/%' AND id != 2"
+        "SELECT id, path, author, content,
+                LENGTH(path) - LENGTH(REPLACE(path, '/', '')) - 1 AS depth
+         FROM comments_path WHERE path LIKE '/1/%' ORDER BY path"
     ).unwrap();
     let rows: Vec<String> = stmt.query_map([], |row| {
-        Ok(format!("    → {} (path: {})", row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    }).unwrap().filter_map(|r| r.ok()).collect();
-    println!("    Descendants of Phones:");
-    for row in &rows { println!("{}", row); }
-
-    // Get depth from path (count slashes - 1)
-    println!("\n    All categories with depth:");
-    let mut stmt = db.prepare(
-        "SELECT name, path, LENGTH(path) - LENGTH(REPLACE(path, '/', '')) - 1 AS depth
-         FROM categories_path ORDER BY path"
-    ).unwrap();
-    let rows: Vec<String> = stmt.query_map([], |row| {
-        Ok(format!("    {} (depth {}, path: {})",
-            row.get::<_, String>(0)?, row.get::<_, i64>(2)?, row.get::<_, String>(1)?))
+        let depth: i64 = row.get(4)?;
+        let indent = "  ".repeat(depth as usize);
+        let prefix = if depth > 1 { "└── " } else { "" };
+        Ok(format!("    {}{}#{} {}: \"{}\"  (path: {})",
+            indent, prefix,
+            row.get::<_, i64>(0)?, row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?, row.get::<_, String>(1)?))
     }).unwrap().filter_map(|r| r.ok()).collect();
     for row in &rows { println!("{}", row); }
 
-    println!("\n    Adjacency list: simple, but needs recursive CTE for subtrees.");
-    println!("    Materialized path: fast subtree queries (LIKE prefix), but moving subtrees is expensive.\n");
+    println!("\n    Adjacency list: simple, lazy-load replies (WHERE parent_id = ?).");
+    println!("    Materialized path: fast full thread (ORDER BY path = threaded order).");
+    println!("    Most apps: adjacency list + reply_count + limit depth to 2-3 levels.\n");
 }

@@ -14,3 +14,6 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 rand = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
+polodb_core = "5"
+bson = "2"
+redb = "2"

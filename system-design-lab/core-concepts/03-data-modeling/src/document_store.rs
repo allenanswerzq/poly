@@ -1,7 +1,9 @@
-use rusqlite::Connection;
+use polodb_core::Database;
+use polodb_core::CollectionT;
+use bson::{doc, Document};
 
 // =============================================================================
-// Document Store — flexible JSON documents (like MongoDB)
+// Document Store — using PoloDB (real MongoDB-compatible embedded document DB)
 //
 //   products collection:
 //   ┌────────────────────────────────────────────┐
@@ -19,85 +21,87 @@ use rusqlite::Connection;
 //   │ }                                          │
 //   └────────────────────────────────────────────┘
 //
-//   No fixed schema — each document can have different fields
-//   Related data embedded directly (reviews inside product)
+//   This is PoloDB — a real document database with MongoDB-like API.
+//   Not SQLite with JSON. Actual BSON documents, actual MongoDB queries.
 //
 //   Pros: flexible schema, nested data, no JOINs for related data
-//   Cons: no referential integrity, data duplication
+//   Cons: no referential integrity, no JOINs, data duplication
 // =============================================================================
 
 pub fn demo() {
-    println!("\n  ═══ Document Store (JSON in SQL) ═══\n");
+    println!("\n  ═══ Document Store (PoloDB — MongoDB-like) ═══\n");
+    println!("    Using PoloDB: a real embedded document database (MongoDB API).\n");
 
-    let db = Connection::open_in_memory().unwrap();
+    // Open PoloDB in a temp directory (it's a real on-disk document DB)
+    let tmp_dir = std::env::temp_dir().join("polodb_demo");
+    let _ = std::fs::remove_dir_all(&tmp_dir); // clean from previous runs
+    let db = Database::open_path(&tmp_dir).unwrap();
+    let products = db.collection::<Document>("products");
 
-    db.execute_batch("
-        CREATE TABLE products (
-            id TEXT PRIMARY KEY,
-            data JSON NOT NULL
-        );
-    ").unwrap();
-
-    // Different documents can have DIFFERENT fields — flexible schema
-    db.execute("INSERT INTO products VALUES ('prod-1', ?)", [r#"{
+    // Insert documents with DIFFERENT schemas — this is the point of a doc store
+    products.insert_one(doc! {
         "name": "Widget",
         "price": 9.99,
         "tags": ["electronics", "gadgets"],
-        "specs": {"weight": "200g", "color": "blue"}
-    }"#]).unwrap();
+        "specs": { "weight": "200g", "color": "blue" }
+    }).unwrap();
 
-    db.execute("INSERT INTO products VALUES ('prod-2', ?)", [r#"{
+    products.insert_one(doc! {
         "name": "Gadget",
         "price": 24.99,
         "tags": ["electronics"],
-        "specs": {"weight": "500g", "color": "red", "battery": "lithium"}
-    }"#]).unwrap();
+        "specs": { "weight": "500g", "color": "red", "battery": "lithium" }
+        // ↑ extra field 'battery' — no schema migration needed
+    }).unwrap();
 
-    // prod-3 has reviews embedded — different structure entirely
-    db.execute("INSERT INTO products VALUES ('prod-3', ?)", [r#"{
+    // Embed related data directly (like MongoDB subdocuments)
+    products.insert_one(doc! {
         "name": "Doohickey",
         "price": 4.99,
         "reviews": [
-            {"user": "Alice", "rating": 5, "text": "Love it!"},
-            {"user": "Bob", "rating": 3, "text": "Its okay"}
+            { "user": "Alice", "rating": 5, "text": "Love it!" },
+            { "user": "Bob", "rating": 3, "text": "It's okay" }
         ]
-    }"#]).unwrap();
+        // ↑ reviews embedded in the document, no separate table needed
+    }).unwrap();
 
-    // Read embedded document — no JOINs
-    println!("    Read product with embedded reviews (no JOIN):");
-    println!("    SQL: SELECT data FROM products WHERE id = 'prod-3'\n");
-    let doc: String = db.query_row(
-        "SELECT json_pretty(data) FROM products WHERE id = 'prod-3'", [], |r| r.get(0)
-    ).unwrap();
-    for line in doc.lines() { println!("    {}", line); }
+    // Read a document with embedded reviews — no JOINs
+    println!("    db.collection('products').find({{name: 'Doohickey'}})\n");
+    let result = products.find(doc! { "name": "Doohickey" }).run().unwrap();
+    for doc in result {
+        let doc = doc.unwrap();
+        println!("    {}\n", doc);
+    }
 
-    // Query INTO JSON fields using json_extract
-    println!("\n    Query into JSON: json_extract(data, '$.specs.battery')");
-    let mut stmt = db.prepare(
-        "SELECT id, json_extract(data, '$.name'), json_extract(data, '$.specs.battery') FROM products"
-    ).unwrap();
-    let rows: Vec<String> = stmt.query_map([], |row| {
-        Ok(format!("    {}: name={}, battery={:?}",
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?))
-    }).unwrap().filter_map(|r| r.ok()).collect();
-    for row in &rows { println!("{}", row); }
+    // Query: flexible schema — different docs have different fields
+    println!("    Flexible schema — query docs with/without 'battery' field:");
+    let all: Vec<_> = products.find(doc! {}).run().unwrap()
+        .filter_map(|d| d.ok()).collect();
+    for d in &all {
+        let name = d.get_str("name").unwrap_or("?");
+        let battery = d.get_document("specs")
+            .ok()
+            .and_then(|s| s.get_str("battery").ok());
+        println!("    {}: battery = {:?}", name, battery);
+    }
 
-    // Filter by JSON field
-    println!("\n    SQL: SELECT ... WHERE json_extract(data, '$.price') > 10\n");
-    let mut stmt = db.prepare(
-        "SELECT id, json_extract(data, '$.name'), json_extract(data, '$.price')
-         FROM products WHERE json_extract(data, '$.price') > 10"
-    ).unwrap();
-    let rows: Vec<String> = stmt.query_map([], |row| {
-        Ok(format!("    {}: {} (${:.2})",
-            row.get::<_, String>(0)?, row.get::<_, String>(1)?,
-            row.get::<_, f64>(2)?))
-    }).unwrap().filter_map(|r| r.ok()).collect();
-    for row in &rows { println!("{}", row); }
+    // Query by field value — like MongoDB find()
+    println!("\n    db.collection('products').find({{price: {{'$gt': 10}}}})");
+    let expensive: Vec<_> = products.find(doc! {
+        "price": { "$gt": 10.0 }
+    }).run().unwrap().filter_map(|d| d.ok()).collect();
+    println!("    Found {} products with price > $10:", expensive.len());
+    for d in &expensive {
+        println!("    → {} (${:.2})",
+            d.get_str("name").unwrap_or("?"),
+            d.get_f64("price").unwrap_or(0.0));
+    }
 
-    println!("\n    Document store: flexible schema, embedded data, no JOINs.");
-    println!("    In PostgreSQL: JSONB column. In MongoDB: native.");
-    println!("    Best for: product catalogs, CMS, varying attributes.\n");
+    // Count documents
+    let total = products.count_documents().unwrap();
+    println!("\n    Total documents in collection: {}", total);
+
+    println!("\n    PoloDB: real document DB, MongoDB-compatible API.");
+    println!("    BSON documents, flexible schema, embedded data, no JOINs.");
+    println!("    In production: MongoDB Atlas, DocumentDB, CosmosDB.\n");
 }
