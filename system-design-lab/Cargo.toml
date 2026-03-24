@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "core-concepts/01-networking",
     "core-concepts/02-api-design",
+    "core-concepts/03-data-modeling",
     "core-concepts/04-caching",
     "core-concepts/06-consistent-hashing",
     "core-concepts/08-database-indexing",

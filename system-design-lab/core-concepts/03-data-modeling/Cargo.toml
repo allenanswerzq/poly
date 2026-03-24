@@ -1,0 +1,16 @@
+[package]
+name = "data-modeling"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "data-modeling"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
