@@ -1,0 +1,11 @@
+[package]
+name = "ml-sys"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ml-sys"
+path = "src/main.rs"
+
+[dependencies]
+rand = { workspace = true }
