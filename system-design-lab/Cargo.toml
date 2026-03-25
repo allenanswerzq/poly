@@ -33,6 +33,7 @@ members = [
     "real-designs/23-code-executor",
     "real-designs/24-live-streaming",
     "real-designs/25-memory-pool",
+    "ml",
     "key-technologies/redis",
     "key-technologies/zookeeper",
     "patterns/scaling-reads",

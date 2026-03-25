@@ -264,3 +264,7 @@ Roofline model:
 | "NVLink vs InfiniBand?" | NVLink: 900GB/s within node (GPU↔GPU). InfiniBand: 50GB/s between nodes. 18x gap = multi-node is communication-bottlenecked. |
 | "FP16 vs BF16?" | BF16 = same range as FP32 (no overflow during training). FP16 = more precision but narrower range (needs loss scaling). |
 | "What's warp divergence?" | 32 threads in a warp take different branches → half idle → 50% performance loss. Avoid branches or ensure warp-uniform branching. |
+
+## Further Reading
+
+- Cornell GPU Architecture Course: https://cvw.cac.cornell.edu/gpu-architecture

@@ -200,7 +200,7 @@ Simple text protocol — most languages have it built in.
 
 In our demo, **axum/hyper** handles all server-side HTTP/2 automatically. **reqwest/h2** handles the client side. `.http2_prior_knowledge()` tells reqwest to send the connection preface directly.
 
-### HTTP/3 / QUIC
+### HTTP/3 / QUIC (Quick UDP Internet Connections)
 
 | | Server | Client |
 |---|---|---|
