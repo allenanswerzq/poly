@@ -275,6 +275,79 @@ After 30 seconds:
 
 In practice, these overlap. nginx can do load balancing and basic auth. Kong is both a reverse proxy and an API gateway. The distinction is about **how much application-level logic** the gateway handles.
 
+## Weighted Routing & Canary Deployments
+
+A gateway controls WHICH backend gets each request. This enables canary deployments, A/B testing, and gradual cache warming.
+
+### How Weighted Routing Works
+
+```
+Load Balancer / Gateway
+    │
+    ├── 1%  → Canary servers  (new version, cold cache)
+    │
+    └── 99% → Stable servers  (old version, warm cache)
+```
+
+The gateway picks a backend for each request based on weights:
+
+```
+Simplest: weighted random selection
+  r = random(0..99)
+  if r < 1:   → canary    (1% of requests)
+  else:       → stable    (99% of requests)
+
+Better: hash-based sticky routing (same user always sees same version)
+  shard = hash(user_id) % 100
+  if shard < 1: → canary   (always the same 1% of USERS)
+  else:         → stable
+
+  User 42: hash(42)%100 = 42 → stable (always)
+  User 55: hash(55)%100 = 0  → canary (always)
+
+  Consistent per-user: no flickering between versions.
+  Same pattern works for: feature flags, A/B tests, gradual rollouts.
+```
+
+### Nginx Configuration
+
+```nginx
+upstream backend {
+    server canary.internal:8080 weight=1;    # 1%
+    server stable.internal:8080 weight=99;   # 99%
+}
+```
+
+### Kubernetes (Istio)
+
+```yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+spec:
+  http:
+  - route:
+    - destination:
+        host: my-app
+        subset: canary
+      weight: 1
+    - destination:
+        host: my-app
+        subset: stable
+      weight: 99
+```
+
+### Gradual Rollout
+
+```
+Step 1: set_weight(canary=1,  stable=99)   → monitor 5 min → OK
+Step 2: set_weight(canary=10, stable=90)   → monitor 5 min → OK
+Step 3: set_weight(canary=50, stable=50)   → monitor 5 min → OK
+Step 4: set_weight(canary=100, stable=0)   → done, old decommissioned
+
+At each step: if error rate spikes → rollback to canary=0, stable=100.
+Cache warms gradually — DB never sees a sudden load spike.
+```
+
 ## Implementation
 
 Our demo includes:

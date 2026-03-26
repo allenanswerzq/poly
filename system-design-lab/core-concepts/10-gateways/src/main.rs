@@ -19,6 +19,7 @@ mod rate_limiting;
 mod auth_middleware;
 mod circuit_breaker;
 mod aggregation;
+mod canary;
 
 fn main() {
     println!("╔══════════════════════════════════════════════════╗");
@@ -64,6 +65,10 @@ fn main() {
     // Demo 5: Request Aggregation
     println!("━━━ 5. Request Aggregation — BFF Pattern ━━━");
     aggregation::demo_request_aggregation();
+
+    // Demo 6: Weighted Routing / Canary
+    println!("━━━ 6. Weighted Routing — Canary Deployment ━━━");
+    canary::demo();
 
     // Summary
     println!("━━━ Gateway Summary ━━━");
