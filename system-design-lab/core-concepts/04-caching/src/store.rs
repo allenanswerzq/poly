@@ -98,6 +98,24 @@ impl Cache {
         let mut r = self.conn.lock().unwrap();
         let _: Result<(), _> = redis::cmd("PERSIST").arg(key).query(&mut *r);
     }
+
+    /// SADD set_key member — add to a Redis SET
+    pub fn sadd(&self, set_key: &str, member: &str) {
+        let mut r = self.conn.lock().unwrap();
+        let _: Result<(), _> = redis::cmd("SADD").arg(set_key).arg(member).query(&mut *r);
+    }
+
+    /// SMEMBERS set_key — get all members of a Redis SET
+    pub fn smembers(&self, set_key: &str) -> Vec<String> {
+        let mut r = self.conn.lock().unwrap();
+        redis::cmd("SMEMBERS").arg(set_key).query(&mut *r).unwrap_or_default()
+    }
+
+    /// SCARD set_key — number of members in a Redis SET
+    pub fn scard(&self, set_key: &str) -> i64 {
+        let mut r = self.conn.lock().unwrap();
+        redis::cmd("SCARD").arg(set_key).query(&mut *r).unwrap_or(0)
+    }
 }
 
 /// SQLite wrapper — clean API for a simple key-value table
