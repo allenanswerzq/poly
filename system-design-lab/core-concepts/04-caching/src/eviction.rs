@@ -1,102 +1,91 @@
-use moka::sync::Cache;
-use std::time::{Duration, Instant};
+use crate::store::Store;
 use std::thread;
+use std::time::Duration;
 
 // =============================================================================
-// TTL + LRU Eviction — what happens when cache is full or entries expire
+// TTL + Eviction
 //
-//   TTL (Time-To-Live):
-//     Entry inserted at t=0 with TTL=5s
-//     GET at t=3s → hit (valid)
-//     GET at t=6s → miss (expired, evicted)
+//   Every cached key MUST have a TTL. Keys without TTL = memory leak.
 //
-//   LRU (Least Recently Used):
-//     Cache capacity = 3
-//     PUT a, PUT b, PUT c → [a, b, c]
-//     PUT d → evict 'a' (least recently used) → [b, c, d]
-//     GET b → 'b' moves to front → [c, d, b]
-//     PUT e → evict 'c' (LRU) → [d, b, e]
+//   Redis TTL commands:
+//     SET key val EX 60     → create with 60s TTL
+//     EXPIRE key 30         → set/reset TTL on existing key
+//     PERSIST key           → remove TTL (dangerous — lives forever)
+//     TTL key               → seconds left (-1 = no TTL, -2 = expired/gone)
 //
-//   moka uses a TinyLFU-based eviction (better than pure LRU).
+//   Eviction policies (when maxmemory hit):
+//     noeviction      → reject new writes (safest, app handles error)
+//     allkeys-lru     → evict least-recently-used across ALL keys
+//     volatile-lru    → evict LRU among keys WITH a TTL only
+//     allkeys-lfu     → evict least-frequently-used (Redis 4.0+)
+//     volatile-ttl    → evict keys closest to expiring
+//
+//   Production rules:
+//     1. Always set a TTL. No exceptions.
+//     2. Use allkeys-lru for cache workloads (safe default)
+//     3. Use noeviction for session stores (explicit failure > silent loss)
+//     4. Monitor eviction rate: high eviction = need more memory
+//
+//   Sliding TTL pattern:
+//     Reset TTL on every read → key stays alive while actively used.
+//     Used for sessions: 30-min inactivity timeout.
+//     Gotcha: popular keys never expire → memory grows. Cap with max TTL.
 // =============================================================================
 
 pub fn demo() {
-    println!("\n  ═══ TTL + LRU Eviction ═══\n");
+    println!("\n  ═══ TTL + Eviction ═══\n");
 
-    // ── TTL Demo ──
-    println!("    ── TTL (Time-To-Live) ──\n");
+    let store = Store::new();
 
-    let cache: Cache<String, String> = Cache::builder()
-        .max_capacity(100)
-        .time_to_live(Duration::from_millis(500)) // expire after 500ms
-        .build();
+    // ── 1. Basic TTL: create with expiry ──
 
-    cache.insert("session:abc".into(), "user-42".into());
-    println!("    SET session:abc (TTL = 500ms)");
+    store.cache.set("temp", "disappears", 2);       // 2-second TTL
+    store.cache.set_permanent("perm", "stays");      // no TTL (bad practice!)
 
-    println!("    GET at t=0ms:   {:?}", cache.get(&"session:abc".to_string()));
-    thread::sleep(Duration::from_millis(300));
-    println!("    GET at t=300ms: {:?}", cache.get(&"session:abc".to_string()));
-    thread::sleep(Duration::from_millis(300));
+    println!("    SET temp (2s TTL), perm (no TTL)");
+    println!("      temp: value={:?}, TTL={}s", store.cache.get("temp"), store.cache.ttl("temp"));
+    println!("      perm: value={:?}, TTL={} (no expiry)", store.cache.get("perm"), store.cache.ttl("perm"));
 
-    // Force eviction of expired entries
-    cache.run_pending_tasks();
+    thread::sleep(Duration::from_secs(3));
+    println!("\n    After 3 seconds:");
+    println!("      temp: value={:?}, TTL={} (gone)", store.cache.get("temp"), store.cache.ttl("temp"));
+    println!("      perm: value={:?}, TTL={} (still here)", store.cache.get("perm"), store.cache.ttl("perm"));
 
-    println!("    GET at t=600ms: {:?}  ← expired!", cache.get(&"session:abc".to_string()));
+    // ── 2. EXPIRE: add TTL to existing key ──
 
-    // ── LRU Eviction Demo ──
-    println!("\n    ── LRU Eviction (capacity = 3) ──\n");
+    store.cache.set_permanent("session:abc", "user_data");
+    println!("\n    EXPIRE — add TTL to existing key:");
+    println!("      Before: TTL={}", store.cache.ttl("session:abc"));
+    store.cache.expire("session:abc", 10);
+    println!("      EXPIRE 10 → TTL={}", store.cache.ttl("session:abc"));
 
-    let small_cache: Cache<String, String> = Cache::builder()
-        .max_capacity(3)
-        .build();
+    // ── 3. PERSIST: remove TTL (use with caution) ──
 
-    // Fill cache to capacity
-    small_cache.insert("a".into(), "val-a".into());
-    small_cache.insert("b".into(), "val-b".into());
-    small_cache.insert("c".into(), "val-c".into());
-    small_cache.run_pending_tasks();
-    println!("    PUT a, b, c → cache full ({} entries)", small_cache.entry_count());
+    store.cache.persist("session:abc");
+    println!("\n    PERSIST — remove TTL:");
+    println!("      After PERSIST → TTL={} (immortal, dangerous!)", store.cache.ttl("session:abc"));
 
-    // Insert 4th entry → evicts least recently used
-    small_cache.insert("d".into(), "val-d".into());
-    small_cache.run_pending_tasks();
-    println!("    PUT d → eviction triggered ({} entries)", small_cache.entry_count());
-    println!("    GET a: {:?}  ← evicted (least recently used)", small_cache.get(&"a".to_string()));
-    println!("    GET b: {:?}", small_cache.get(&"b".to_string()));
-    println!("    GET d: {:?}", small_cache.get(&"d".to_string()));
+    // ── 4. Sliding TTL: reset on every access (session pattern) ──
+    //
+    //   Use case: "session expires after 30 min of inactivity"
+    //   Every request calls EXPIRE to push the deadline forward.
+    //
 
-    // Access 'b' to make it recently used, then insert more
-    let _ = small_cache.get(&"b".to_string()); // 'b' is now most recently used
-    small_cache.insert("e".into(), "val-e".into());
-    small_cache.run_pending_tasks();
-    println!("\n    GET b (touch it), then PUT e:");
-    println!("    GET b: {:?}  ← survived (recently used)", small_cache.get(&"b".to_string()));
-    println!("    GET c: {:?}  ← evicted (wasn't used recently)", small_cache.get(&"c".to_string()));
-    println!("    GET e: {:?}", small_cache.get(&"e".to_string()));
+    println!("\n    Sliding TTL (session timeout pattern):");
+    store.cache.set("session:x", "active_user", 5);  // 5s inactivity timeout
 
-    // ── Time-To-Idle Demo ──
-    println!("\n    ── Time-To-Idle (expire if not accessed) ──\n");
-
-    let idle_cache: Cache<String, String> = Cache::builder()
-        .max_capacity(100)
-        .time_to_idle(Duration::from_millis(400)) // expire if idle for 400ms
-        .build();
-
-    idle_cache.insert("hot-key".into(), "frequently accessed".into());
-    idle_cache.insert("cold-key".into(), "rarely accessed".into());
-
-    // Keep accessing hot-key, ignore cold-key
-    for i in 0..4 {
-        thread::sleep(Duration::from_millis(200));
-        let _ = idle_cache.get(&"hot-key".to_string()); // reset idle timer
-        idle_cache.run_pending_tasks();
+    for i in 1..=3 {
+        thread::sleep(Duration::from_secs(1));
+        let _val = store.cache.get("session:x");     // user is active
+        store.cache.expire("session:x", 5);           // reset timeout
+        println!("      +{}s: user active → TTL reset to {}s",
+            i, store.cache.ttl("session:x"));
     }
+    println!("      Key alive after 3s because each access resets the clock");
 
-    println!("    After 800ms (hot-key accessed every 200ms, cold-key ignored):");
-    println!("    hot-key:  {:?}  ← alive (kept resetting idle timer)", idle_cache.get(&"hot-key".to_string()));
-    println!("    cold-key: {:?}  ← evicted (idle > 400ms)", idle_cache.get(&"cold-key".to_string()));
-
-    println!("\n    moka eviction: TTL (absolute expiry), TTI (idle expiry), LFU (size limit).");
-    println!("    In production: Redis EXPIRE, Memcached expiry, CDN max-age.\n");
+    // Stop accessing → key expires
+    println!("      Now user goes idle...");
+    thread::sleep(Duration::from_secs(6));
+    println!("      +6s inactivity → value={:?}, TTL={} (expired)\n",
+        store.cache.get("session:x"), store.cache.ttl("session:x"));
 }

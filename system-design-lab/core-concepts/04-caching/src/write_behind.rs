@@ -1,116 +1,126 @@
-use moka::sync::Cache;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use crate::store::Store;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 // =============================================================================
-// Write-Behind (Write-Back) — write to cache, async flush to DB later
+// Write-Behind (Write-Back)
 //
-//   Client → App → write to Cache → return success IMMEDIATELY
-//                          │
-//                          └──→ async background thread flushes to DB
+//   Write: cache only (instant return) → async flush to DB later
+//   Read:  cache → miss → DB → cache
 //
-//   Fastest writes: client doesn't wait for DB.
-//   But risky: if the app crashes before flush, data is LOST.
+//   Key benefit: WRITE COALESCING
+//     100 writes to same key in 1s → only 1 DB write (latest value)
+//     1000 writes to 50 keys → 50 DB writes (not 1000)
 //
-//   Good for: analytics counters, non-critical metrics, view counts
-//   Bad for: banking, payments (data loss = unacceptable)
+//   Trade-off: crash between write and flush → DATA LOSS
+//     The cache (Redis) is NOT the source of truth here.
+//     If Redis dies before flush, unflushed writes are gone.
+//
+//         ┌──────┐  set()  ┌───────┐  flush()  ┌────┐
+//         │Client├────────►│ Redis  ├──────────►│ DB │
+//         └──────┘         └───────┘ (batched)  └────┘
+//                        returns immediately
+//
+//   Production considerations:
+//     - Redis AOF (appendonly yes) reduces but doesn't eliminate loss window
+//     - Flush interval = trade-off between latency and data loss window
+//     - Use for: analytics counters, view counts, non-critical writes
+//     - Never use for: payments, orders, anything where loss = bad
 // =============================================================================
 
-struct WriteBehindCache {
-    cache: Cache<String, String>,
-    // "Dirty" entries waiting to be flushed to DB
-    write_buffer: Arc<Mutex<Vec<(String, String)>>>,
-    db: Arc<Mutex<HashMap<String, String>>>,
+/// WriteBehind wraps a Store and buffers writes in cache with async DB flush.
+struct WriteBehind {
+    store: Arc<Store>,
+    dirty: dashmap::DashSet<String>,
 }
 
-impl WriteBehindCache {
-    fn new() -> Self {
-        Self {
-            cache: Cache::builder()
-                .max_capacity(100)
-                .build(),
-            write_buffer: Arc::new(Mutex::new(Vec::new())),
-            db: Arc::new(Mutex::new(HashMap::new())),
-        }
+impl WriteBehind {
+    fn new(store: Arc<Store>) -> Self {
+        Self { store, dirty: dashmap::DashSet::new() }
     }
 
-    // Write-behind: write to cache + buffer, return immediately
+    /// Write: cache only (instant) + mark key as dirty for future flush
     fn set(&self, key: &str, value: &str) {
-        // Step 1: Write to cache (instant)
-        self.cache.insert(key.to_string(), value.to_string());
-
-        // Step 2: Add to write buffer (will be flushed later)
-        self.write_buffer.lock().unwrap().push((key.to_string(), value.to_string()));
-
-        // Client returns here — doesn't wait for DB write!
+        self.store.cache.set(key, value, 300);  // client returns here (fast)
+        self.dirty.insert(key.to_string());      // mark for async flush
     }
 
+    /// Read: cache → miss → DB → populate cache
     fn get(&self, key: &str) -> Option<String> {
-        self.cache.get(&key.to_string())
+        if let Some(v) = self.store.cache.get(key) { return Some(v); }
+        let v = self.store.db.get(key)?;
+        self.store.cache.set(key, &v, 300);
+        Some(v)
     }
 
-    // Background flush — runs periodically (like every 1 second)
-    fn flush(&self) -> usize {
-        let entries: Vec<(String, String)> = {
-            let mut buf = self.write_buffer.lock().unwrap();
-            buf.drain(..).collect()
-        };
-        let count = entries.len();
-        if count > 0 {
-            thread::sleep(Duration::from_millis(20)); // simulate batch DB write
-            let mut db = self.db.lock().unwrap();
-            for (k, v) in entries {
-                db.insert(k, v);
+    /// Flush all dirty keys from cache → DB. Returns number flushed.
+    /// In production this runs in a background loop on a timer.
+    fn flush(&self) -> i32 {
+        let mut flushed = 0;
+        let keys: Vec<String> = self.dirty.iter().map(|k| k.clone()).collect();
+        for key in &keys {
+            if let Some(val) = self.store.cache.get(key) {
+                self.store.db.set(key, &val);
+                flushed += 1;
             }
         }
-        count
+        self.dirty.clear();
+        flushed
     }
 
-    fn db_count(&self) -> usize {
-        self.db.lock().unwrap().len()
-    }
-
-    fn buffer_count(&self) -> usize {
-        self.write_buffer.lock().unwrap().len()
+    fn dirty_count(&self) -> usize {
+        self.dirty.len()
     }
 }
 
 pub fn demo() {
-    println!("\n  ═══ Write-Behind (Write-Back) ═══\n");
+    println!("\n  ═══ Write-Behind ═══\n");
 
-    let store = WriteBehindCache::new();
+    let store = Arc::new(Store::new());
+    let wb = Arc::new(WriteBehind::new(Arc::clone(&store)));
 
-    // Fast writes — all go to cache + buffer
-    println!("    Writing 5 entries (cache only, DB write deferred):\n");
-    let start = std::time::Instant::now();
-    for i in 1..=5 {
-        store.set(&format!("counter:{}", i), &format!("{}", i * 100));
+    // ── Demonstrate write coalescing ──
+
+    println!("    Write coalescing (100 writes to 5 keys):\n");
+
+    for i in 0..100 {
+        let key = format!("counter:{}", i % 5);
+        wb.set(&key, &format!("{}", i));
     }
-    println!("    5 writes completed in {:?} (no DB wait!)", start.elapsed());
-    println!("    Cache entries: {}", store.cache.entry_count());
-    println!("    Write buffer:  {} entries pending", store.buffer_count());
-    println!("    DB entries:    {} (nothing yet!)\n", store.db_count());
+    println!("      Writes to cache: 100");
+    println!("      Dirty keys:      {} (coalesced!)", wb.dirty_count());
+    println!("      DB writes so far: {} (none until flush)", store.db.count());
 
-    // Read from cache (instant, even though DB hasn't been written yet)
-    println!("    GET counter:3 → {:?} (from cache, DB is empty!)\n",
-        store.get("counter:3"));
+    // ── Async flush: background thread drains dirty set → DB ──
 
-    // Background flush — batch write all pending entries to DB
-    println!("    Flushing write buffer to DB...\n");
-    let flushed = store.flush();
-    println!("    Flushed {} entries to DB", flushed);
-    println!("    Write buffer:  {} entries pending", store.buffer_count());
-    println!("    DB entries:    {} (now persisted!)\n", store.db_count());
+    let wb2 = Arc::clone(&wb);
+    let flusher = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));   // batch window
+        wb2.flush()
+    });
 
-    // Simulate the risk: data loss before flush
-    println!("    ⚠ Risk: if app crashes BEFORE flush, buffered writes are LOST.");
-    store.set("important:data", "this could be lost");
-    println!("    SET important:data (in buffer, not yet in DB)");
-    println!("    Buffer: {} pending, DB: {} persisted", store.buffer_count(), store.db_count());
-    println!("    → If we crash now, 'important:data' is gone forever.\n");
+    let flushed = flusher.join().unwrap();
+    println!("\n      After flush: DB writes={} (5, not 100)", flushed);
 
-    println!("    Write-behind: fastest writes, but risk of data loss.");
-    println!("    Best for: view counts, analytics, non-critical counters.\n");
+    // Verify consistency post-flush
+    println!("\n      Verify cache == DB after flush:");
+    for i in 0..5 {
+        let key = format!("counter:{}", i);
+        let c = store.cache.get(&key).unwrap_or_default();
+        let d = store.db.get(&key).unwrap_or_default();
+        println!("        {} → cache={}, db={}, match={}", key, c, d, c == d);
+    }
+
+    // ── Data loss scenario: write, then crash before flush ──
+
+    println!("\n    ── Crash = data loss ──\n");
+
+    wb.set("payment:999", r#"{"amount":500}"#);
+    println!("      Wrote payment:999 to cache (not flushed)");
+    println!("      cache = {:?}", store.cache.get("payment:999"));
+    println!("      db    = {:?}", store.db.get("payment:999"));
+    println!("      If Redis crashes now → payment is LOST");
+    println!("      This is why write-behind is NEVER used for payments\n");
 }

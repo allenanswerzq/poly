@@ -1,98 +1,117 @@
-use moka::sync::Cache;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use crate::store::{Cache, Store};
+use dashmap::DashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 // =============================================================================
-// Hot Key — one key gets disproportionate traffic.
-// Single Redis can handle ~100K ops/s. A viral tweet gets 1M reads/s.
-// Solution: local in-process cache (L1) absorbs the hot key.
+// Hot Key + L1 Local Cache
+//
+//   Problem: one key gets 100k QPS → single Redis shard bottleneck
+//   Fix:     L1 in-process cache absorbs most reads, only refresh from Redis
+//
+//         ┌──────────── App Process ────────────┐
+//         │  L1 (DashMap, 5ms TTL)              │
+//         │     ↓ miss                          │
+//         │  L2 (Redis)                         │
+//         │     ↓ miss                          │
+//         │  DB (SQLite)                        │
+//         └─────────────────────────────────────┘
+//
+//   L1 absorbs 90-99% of reads. Only ~1% leak to Redis.
+//
+//   Trade-off: L1 has a staleness window = L1 TTL.
+//     Write happens → L2 updated → L1 still serves old value until its TTL.
+//     5ms L1 TTL = max 5ms stale. Acceptable for hot read-heavy keys.
+//     Do NOT use for data that must be immediately consistent after writes.
 // =============================================================================
+
+/// HotKeyCache: L1 in-process cache over L2 Redis.
+/// Each app server has its own L1. L2 (Redis) is shared.
+struct HotKeyCache {
+    store: Arc<Store>,
+    l1: DashMap<String, (String, Instant)>,
+    l1_ttl: Duration,
+    l1_hits: AtomicU64,
+    l2_hits: AtomicU64,
+}
+
+impl HotKeyCache {
+    fn new(store: Arc<Store>, l1_ttl_ms: u64) -> Self {
+        Self {
+            store,
+            l1: DashMap::new(),
+            l1_ttl: Duration::from_millis(l1_ttl_ms),
+            l1_hits: AtomicU64::new(0),
+            l2_hits: AtomicU64::new(0),
+        }
+    }
+
+    /// Read: L1 → L2 (Redis) → DB
+    fn get(&self, cache: &Cache, key: &str) -> Option<String> {
+        // L1 check (in-process, zero network)
+        if let Some(entry) = self.l1.get(key) {
+            if entry.1.elapsed() < self.l1_ttl {
+                self.l1_hits.fetch_add(1, Ordering::Relaxed);
+                return Some(entry.0.clone());
+            }
+            drop(entry);
+            self.l1.remove(key);
+        }
+        // L1 miss → L2 (Redis)
+        if let Some(val) = cache.get(key) {
+            self.l2_hits.fetch_add(1, Ordering::Relaxed);
+            self.l1.insert(key.to_string(), (val.clone(), Instant::now()));
+            return Some(val);
+        }
+        // L2 miss → DB (rare)
+        let val = self.store.db.get(key)?;
+        cache.set(key, &val, 300);
+        self.l1.insert(key.to_string(), (val.clone(), Instant::now()));
+        Some(val)
+    }
+
+    fn stats(&self) -> (u64, u64) {
+        (self.l1_hits.load(Ordering::Relaxed), self.l2_hits.load(Ordering::Relaxed))
+    }
+}
 
 pub fn demo() {
-    println!("\n  ═══ Hot Key Problem ═══\n");
+    println!("\n  ═══ Hot Key + L1 Local Cache ═══\n");
 
-    // Simulate a shared cache (like Redis) with a throughput limit
-    let redis_ops = Arc::new(AtomicUsize::new(0));
-    let redis_data: Arc<Cache<String, String>> = Arc::new(Cache::builder()
-        .max_capacity(1000)
-        .build());
+    let store = Arc::new(Store::new());
+    let hk = Arc::new(HotKeyCache::new(Arc::clone(&store), 5));  // 5ms L1 TTL
 
-    // Populate Redis with the viral tweet
-    redis_data.insert("tweet:viral".into(), r#"{"text":"This tweet went viral!","likes":5000000}"#.into());
+    // Seed the hot key in both DB and Redis
+    store.db.set("trending:1", r#"{"topic":"Breaking News","views":1000000}"#);
+    store.cache.set("trending:1", r#"{"topic":"Breaking News","views":1000000}"#, 300);
 
-    // ── Without L1: every request hits Redis ──
-    println!("    Without L1 cache (all requests hit Redis):\n");
-
-    let ops = Arc::clone(&redis_ops);
-    let data = Arc::clone(&redis_data);
+    // Simulate 10 threads × 1000 reads on the same key
+    let total_reads = 10_000u64;
+    println!("    Simulating {} reads on a single hot key:", total_reads);
 
     let start = Instant::now();
     let mut handles = vec![];
-
-    // 10 "app servers" each sending 1000 requests for the viral tweet
-    for server_id in 0..10 {
-        let ops = Arc::clone(&ops);
-        let data = Arc::clone(&data);
+    for _ in 0..10 {
+        let s = Arc::clone(&store);
+        let h = Arc::clone(&hk);
         handles.push(thread::spawn(move || {
+            let cache = s.new_cache_conn();
             for _ in 0..1000 {
-                ops.fetch_add(1, Ordering::Relaxed);
-                let _ = data.get(&"tweet:viral".to_string());
+                let _ = h.get(&cache, "trending:1");
             }
         }));
     }
     for h in handles { h.join().unwrap(); }
-    let total_ops = ops.load(Ordering::Relaxed);
-    println!("    10 servers × 1000 req = {} Redis ops in {:?}",
-        total_ops, start.elapsed());
-    println!("    Redis at 100K ops/s: would need {:.1}s to process\n",
-        total_ops as f64 / 100_000.0);
+    let elapsed = start.elapsed();
 
-    // ── With L1: local cache absorbs hot key ──
-    println!("    With L1 local cache (hot key cached per-server):\n");
+    let (l1_hits, l2_hits) = hk.stats();
+    let l1_pct = l1_hits as f64 / total_reads as f64 * 100.0;
 
-    let redis_ops2 = Arc::new(AtomicUsize::new(0));
-    let data2 = Arc::clone(&redis_data);
-
-    let start = Instant::now();
-    let mut handles = vec![];
-
-    for server_id in 0..10 {
-        let redis_ops = Arc::clone(&redis_ops2);
-        let data = Arc::clone(&data2);
-        handles.push(thread::spawn(move || {
-            // Each server has its own L1 cache (HashMap, 5s TTL simulated)
-            let mut l1: HashMap<String, String> = HashMap::new();
-
-            for i in 0..1000 {
-                let key = "tweet:viral";
-
-                // Check L1 first
-                if let Some(val) = l1.get(key) {
-                    // L1 hit — no Redis call
-                    continue;
-                }
-
-                // L1 miss — fetch from Redis (once per server)
-                redis_ops.fetch_add(1, Ordering::Relaxed);
-                if let Some(val) = data.get(&key.to_string()) {
-                    l1.insert(key.to_string(), val);
-                }
-            }
-        }));
-    }
-    for h in handles { h.join().unwrap(); }
-    let total_ops2 = redis_ops2.load(Ordering::Relaxed);
-    println!("    10 servers × 1000 req: only {} Redis ops (1 per server)",
-        total_ops2);
-    println!("    Reduction: {:.0}x fewer Redis calls", total_ops as f64 / total_ops2 as f64);
-    println!("    L1 absorbed {:.1}% of requests\n",
-        (1.0 - total_ops2 as f64 / total_ops as f64) * 100.0);
-
-    println!("    Hot key solutions:");
-    println!("    1. L1 local cache (shown above) — 1000x reduction");
-    println!("    2. Replicate key across shards: tweet:viral:shard0..N");
-    println!("    3. Client-side cache with 1-5s TTL\n");
+    println!("    L1 hits: {} ({:.1}%)", l1_hits, l1_pct);
+    println!("    L2 hits: {} ({:.1}%)", l2_hits, 100.0 - l1_pct);
+    println!("    Total:   {} reads in {:?}", total_reads, elapsed);
+    println!("    L1 absorbed {:.0}x the Redis load\n",
+        if l2_hits > 0 { l1_hits as f64 / l2_hits as f64 } else { f64::INFINITY });
 }

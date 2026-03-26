@@ -8,8 +8,7 @@ name = "caching"
 path = "src/main.rs"
 
 [dependencies]
-parking_lot = { workspace = true }
+redis = "0.27"
+rusqlite = { version = "0.32", features = ["bundled"] }
 dashmap = { workspace = true }
-moka = { version = "0.12", features = ["sync"] }
 rand = { workspace = true }
-serde_json = { workspace = true }

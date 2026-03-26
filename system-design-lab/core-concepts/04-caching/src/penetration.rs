@@ -1,131 +1,102 @@
-use moka::sync::Cache;
-use std::collections::HashSet;
-use std::time::Duration;
+use crate::store::Store;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
 
 // =============================================================================
-// Cache Penetration — queries for data that doesn't exist
+// Cache Penetration
 //
-//   Problem:
-//     GET user:999999 → cache miss → DB query → not found → not cached
-//     GET user:999999 → cache miss → DB query → not found → not cached
-//     ... every request hits DB! Attacker can exploit this.
+//   Problem: query for key that NEVER exists (not in cache NOR DB)
+//            → every request is a cache miss + DB miss → DB hammered
 //
-//   Solutions:
-//     1. Cache negative results (NULL) with short TTL
-//     2. Bloom filter: check if key could exist before querying DB
+//   Example: attacker sends GET /user/99999999 → DB scanned every time
+//
+//   Fix 1: "negative caching" — cache the NULL result with a short TTL
+//
+//         GET user:X → miss → DB → not found → cache "∅" (30s TTL)
+//         GET user:X → hit "∅" → return 404 immediately (no DB)
+//
+//   Fix 2: Bloom filter (not shown here, but mentioned)
+//         Before hitting DB, check a bloom filter.
+//         If bloom says "definitely not in DB" → return 404, skip DB.
+//         Bloom filters have false positives (say yes when no) but
+//         never false negatives (never say no when yes).
+//         Space-efficient: 1GB bloom can track 1 billion keys.
 // =============================================================================
 
-// Simulate a DB that only has users 1-100
-fn db_lookup(key: &str) -> Option<String> {
-    // Parse "user:N" and only return data for ids 1-100
-    if let Some(id_str) = key.strip_prefix("user:") {
-        if let Ok(id) = id_str.parse::<u64>() {
-            if id >= 1 && id <= 100 {
-                return Some(format!("{{\"id\":{},\"name\":\"User{}\"}}", id, id));
+/// NegativeCache wraps a Store and caches "not found" results to prevent
+/// repeated DB lookups for keys that don't exist.
+struct NegativeCache {
+    store: Arc<Store>,
+    null_marker: &'static str,
+    db_hits: AtomicI32,
+}
+
+impl NegativeCache {
+    fn new(store: Arc<Store>) -> Self {
+        Self { store, null_marker: "\x00NULL", db_hits: AtomicI32::new(0) }
+    }
+
+    /// Read with negative caching: cache miss + DB miss → cache the absence
+    fn get(&self, key: &str) -> Option<String> {
+        // 1. Check cache
+        if let Some(val) = self.store.cache.get(key) {
+            if val == self.null_marker {
+                return None;                   // cached negative → skip DB
+            }
+            return Some(val);
+        }
+        // 2. Cache miss → DB
+        self.db_hits.fetch_add(1, Ordering::Relaxed);
+        match self.store.db.get(key) {
+            Some(val) => {
+                self.store.cache.set(key, &val, 60);              // normal cache
+                Some(val)
+            }
+            None => {
+                self.store.cache.set(key, self.null_marker, 30);  // negative cache (short TTL)
+                None
             }
         }
     }
-    None // doesn't exist
-}
 
-// Simple bloom filter (hash set for clarity — real bloom filter uses bit array)
-struct SimpleBloomFilter {
-    // In production: use a bit array with multiple hash functions
-    // Here we use a HashSet for clarity of concept
-    known_keys: HashSet<String>,
-}
-
-impl SimpleBloomFilter {
-    fn new() -> Self {
-        let mut known_keys = HashSet::new();
-        // Pre-populate with known valid key patterns
-        for i in 1..=100 {
-            known_keys.insert(format!("user:{}", i));
-        }
-        Self { known_keys }
-    }
-
-    fn might_exist(&self, key: &str) -> bool {
-        // Real bloom filter: might return true for non-existent keys (false positive)
-        // but NEVER returns false for existing keys (no false negatives)
-        self.known_keys.contains(key)
-    }
+    fn reset_hits(&self) { self.db_hits.store(0, Ordering::Relaxed); }
+    fn hits(&self) -> i32 { self.db_hits.load(Ordering::Relaxed) }
 }
 
 pub fn demo() {
     println!("\n  ═══ Cache Penetration ═══\n");
 
-    // ── Without protection: every missing key hits DB ──
-    println!("    ── Without protection ──\n");
+    let store = Arc::new(Store::new());
+    let nc = NegativeCache::new(Arc::clone(&store));
 
-    let cache: Cache<String, Option<String>> = Cache::builder()
-        .max_capacity(1000)
-        .build();
+    // Seed DB with only a few users
+    store.db.set("user:1", r#"{"name":"Alice"}"#);
+    store.db.set("user:2", r#"{"name":"Bob"}"#);
 
-    let mut db_hits = 0;
-    let test_keys = ["user:1", "user:999", "user:999", "user:888", "user:888", "user:1"];
+    // ── Without negative caching: every lookup hits DB ──
 
-    for key in &test_keys {
-        if cache.get(&key.to_string()).is_some() {
-            println!("    GET {} → cache hit", key);
-            continue;
-        }
-        db_hits += 1;
-        let result = db_lookup(key);
-        // BUG: we DON'T cache None results → non-existent keys always hit DB
-        if let Some(ref val) = result {
-            cache.insert(key.to_string(), Some(val.clone()));
-        }
-        println!("    GET {} → DB query → {:?}",
-            key, result.as_deref().unwrap_or("NOT FOUND"));
+    println!("    Without negative caching:");
+    let mut raw_hits = 0;
+    for _ in 0..100 {
+        let _ = store.db.get("user:999");      // always misses, always queries
+        raw_hits += 1;
     }
-    println!("\n    DB hits: {} (non-existent keys hit DB every time!)\n", db_hits);
+    println!("      100 lookups for missing key → {} DB hits\n", raw_hits);
 
-    // ── Solution 1: Cache negative results ──
-    println!("    ── Solution 1: Cache negative results (cache NULL) ──\n");
+    // ── With negative caching: 1 DB hit, 99 cache hits ──
 
-    let cache2: Cache<String, Option<String>> = Cache::builder()
-        .max_capacity(1000)
-        .time_to_live(Duration::from_secs(60)) // short TTL for negatives
-        .build();
-
-    let mut db_hits2 = 0;
-    for key in &test_keys {
-        if let Some(cached) = cache2.get(&key.to_string()) {
-            let display = cached.as_deref().unwrap_or("NULL (negative cache)");
-            println!("    GET {} → cache hit: {}", key, display);
-            continue;
-        }
-        db_hits2 += 1;
-        let result = db_lookup(key);
-        // Cache BOTH hits AND misses (None = negative cache)
-        cache2.insert(key.to_string(), result.clone());
-        println!("    GET {} → DB query → {:?}",
-            key, result.as_deref().unwrap_or("NOT FOUND (now cached as NULL)"));
+    println!("    With negative caching:");
+    nc.reset_hits();
+    for _ in 0..100 {
+        let _ = nc.get("user:999");
     }
-    println!("\n    DB hits: {} (negative caching prevents repeated lookups)\n", db_hits2);
+    println!("      100 lookups for missing key → {} DB hit(s)", nc.hits());
+    println!("      Cached as {:?} (30s TTL)\n",
+        store.cache.get("user:999").map(|v| if v == "\x00NULL" { "NULL marker".to_string() } else { v }));
 
-    // ── Solution 2: Bloom filter ──
-    println!("    ── Solution 2: Bloom filter (pre-check before DB) ──\n");
+    // ── Normal keys still work ──
 
-    let bloom = SimpleBloomFilter::new();
-    let mut db_hits3 = 0;
-
-    let test_keys2 = ["user:1", "user:999", "user:50", "user:888", "user:100"];
-    for key in &test_keys2 {
-        if !bloom.might_exist(key) {
-            println!("    GET {} → bloom filter says NO → skip DB entirely", key);
-            continue;
-        }
-        db_hits3 += 1;
-        let result = db_lookup(key);
-        println!("    GET {} → bloom says MAYBE → DB query → {:?}",
-            key, result.as_deref().unwrap_or("not found"));
-    }
-    println!("\n    DB hits: {} (bloom filter rejected non-existent keys)", db_hits3);
-
-    println!("\n    Cache penetration solutions:");
-    println!("    1. Cache NULL: simple, but uses memory for non-existent keys");
-    println!("    2. Bloom filter: O(1) pre-check, tiny memory (~1 byte per key)");
-    println!("    In production: Redis + bloom filter module, or app-level bloom.\n");
+    nc.reset_hits();
+    let val = nc.get("user:1");
+    println!("    Existing key: user:1 → {:?} (DB hits: {})\n", val, nc.hits());
 }
