@@ -116,6 +116,24 @@ impl Cache {
         let mut r = self.conn.lock().unwrap();
         redis::cmd("SCARD").arg(set_key).query(&mut *r).unwrap_or(0)
     }
+
+    /// Pipeline: SET key value EX ttl + SADD set_key key — atomic in 1 RTT.
+    /// Ensures the value and dirty marker are both written or neither.
+    pub fn set_and_sadd(&self, key: &str, value: &str, ttl_secs: u64, set_key: &str) {
+        let mut r = self.conn.lock().unwrap();
+        let mut pipe = redis::pipe();
+        pipe.atomic()                          // MULTI/EXEC — all or nothing
+            .set_ex(key, value, ttl_secs)
+            .cmd("SADD").arg(set_key).arg(key);
+        let _: Result<(), _> = pipe.query(&mut *r);
+    }
+
+    /// RENAME old_key new_key — atomic rename. Fails silently if old_key missing.
+    pub fn rename(&self, old_key: &str, new_key: &str) -> bool {
+        let mut r = self.conn.lock().unwrap();
+        redis::cmd("RENAME").arg(old_key).arg(new_key)
+            .query::<String>(&mut *r).is_ok()
+    }
 }
 
 /// SQLite wrapper — clean API for a simple key-value table

@@ -21,23 +21,36 @@ use std::time::Duration;
 //         └──────┘         └───────┘ (batched)  └────┘
 //                        returns immediately
 //
-//   Dirty tracking: use a Redis SET, not local memory.
-//     Why? If the app crashes, a local DashSet is gone — you don't even
-//     know WHICH keys to flush. A Redis SET survives app restarts.
-//     Multi-server: N app servers all SADD to the same Redis SET.
-//     Flusher reads SMEMBERS → flushes → DEL dirty set.
+//   Dirty tracking lives in Redis (not local memory):
+//     - Survives app crash — flusher on restart knows which keys are dirty
+//     - Works across N app servers (all SADD to the same Redis SET)
+//
+//   Race condition 1 — set() must be atomic:
+//     SET value + SADD dirty are 2 commands. If app crashes between them:
+//       Case A: value written, not in dirty set → never flushed, lost
+//       Case B: in dirty set, value not written → flush reads stale data
+//     Fix: Redis pipeline with MULTI/EXEC — both commands in 1 atomic tx.
+//
+//   Race condition 2 — flush() must not drop concurrent writes:
+//     Naive: SMEMBERS → iterate → DEL dirty_set.
+//     If a writer SADDs a new key between SMEMBERS and DEL,
+//     that key is wiped from dirty set without being flushed → lost.
+//     Fix: RENAME dirty_set → processing_set (atomic swap).
+//          Writers SADD to dirty_set (new, empty). Flusher drains
+//          processing_set. No writes are lost.
 //
 //   Production considerations:
-//     - Redis AOF (appendonly yes) reduces but doesn't eliminate loss window
-//     - Flush interval = trade-off between latency and data loss window
+//     - Redis AOF reduces but doesn't eliminate the loss window
+//     - Flush interval = trade-off: shorter = less data loss, more DB writes
 //     - Use for: analytics counters, view counts, non-critical writes
 //     - Never use for: payments, orders, anything where loss = bad
 // =============================================================================
 
 const DIRTY_SET: &str = "dirty_keys";
+const PROCESSING_SET: &str = "dirty_keys:processing";
 
 /// WriteBehind wraps a Store and buffers writes in Redis with async DB flush.
-/// Dirty key tracking uses a Redis SET (SADD/SMEMBERS), NOT local memory.
+/// All dirty tracking lives in Redis (SADD/RENAME/SMEMBERS).
 struct WriteBehind {
     store: Arc<Store>,
 }
@@ -47,10 +60,10 @@ impl WriteBehind {
         Self { store }
     }
 
-    /// Write: cache SET + SADD to dirty set (both in Redis, survives app crash)
+    /// Write: atomic pipeline (MULTI/EXEC) of SET + SADD.
+    /// Both commands succeed or neither does — no partial state.
     fn set(&self, key: &str, value: &str) {
-        self.store.cache.set(key, value, 300);     // cached value
-        self.store.cache.sadd(DIRTY_SET, key);     // track dirty key in Redis
+        self.store.cache.set_and_sadd(key, value, 300, DIRTY_SET);
     }
 
     /// Read: cache → miss → DB → populate cache
@@ -61,10 +74,20 @@ impl WriteBehind {
         Some(v)
     }
 
-    /// Flush: SMEMBERS dirty set → read each from cache → write to DB → DEL set.
-    /// Returns number of keys flushed.
+    /// Flush dirty keys to DB. Race-safe:
+    ///   1. RENAME dirty_keys → dirty_keys:processing  (atomic swap)
+    ///      Now writers SADD to a fresh dirty_keys, not the one we're reading.
+    ///   2. SMEMBERS processing → for each: read cache → write DB
+    ///   3. DEL processing
+    /// No concurrent writes are lost because step 1 atomically moves
+    /// the set away from writers.
     fn flush(&self) -> i32 {
-        let keys = self.store.cache.smembers(DIRTY_SET);
+        // Step 1: atomic swap — writers now write to a new dirty_keys
+        if !self.store.cache.rename(DIRTY_SET, PROCESSING_SET) {
+            return 0;  // dirty_keys doesn't exist → nothing to flush
+        }
+        // Step 2: drain the processing set into DB
+        let keys = self.store.cache.smembers(PROCESSING_SET);
         let mut flushed = 0;
         for key in &keys {
             if let Some(val) = self.store.cache.get(key) {
@@ -72,11 +95,11 @@ impl WriteBehind {
                 flushed += 1;
             }
         }
-        self.store.cache.del(DIRTY_SET);           // clear dirty set
+        // Step 3: clean up
+        self.store.cache.del(PROCESSING_SET);
         flushed
     }
 
-    /// How many keys are dirty (pending flush)?
     fn dirty_count(&self) -> i64 {
         self.store.cache.scard(DIRTY_SET)
     }

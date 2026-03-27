@@ -17,10 +17,15 @@ use std::time::Duration;
 //
 //   Fix: SETNX lock — only 1 thread rebuilds, others wait for cache
 //
-//     T1: miss → SETNX lock → acquired → DB → fill cache → unlock
+//     T1: miss → SETNX lock → acquired → double-check miss → DB → fill → unlock
 //     T2: miss → SETNX lock → FAILED → spin-wait → cache.get → HIT
 //     T3: miss → SETNX lock → FAILED → spin-wait → cache.get → HIT
 //     = 1 DB query total
+//
+//   Double-check after acquiring lock:
+//     Without it: T1 misses → T2 also misses → T2 wins lock, rebuilds,
+//     fills cache, releases → T1 now wins lock → rebuilds AGAIN (2 DB hits).
+//     With double-check: T1 wins lock → checks cache → HIT → skips DB.
 //
 //   SETNX details:
 //     SET lock:product:hot 1 NX EX 5
@@ -51,7 +56,7 @@ impl StampedeGuard {
 
     /// Read with SETNX-based stampede protection.
     /// On miss: try to acquire rebuild lock.
-    ///   Won  → query DB, fill cache, release lock.
+    ///   Won  → double-check cache → query DB → fill cache → release lock.
     ///   Lost → spin-wait until winner fills cache.
     fn get(&self, cache: &Cache, key: &str) -> Option<String> {
         // Fast path: cache hit
@@ -60,7 +65,13 @@ impl StampedeGuard {
         let lock_key = format!("lock:{}", key);
 
         if cache.try_lock(&lock_key, 10) {
-            // Won the lock → I rebuild
+            // Won the lock — but another thread may have filled cache
+            // between our miss and our lock acquire. Double-check.
+            if let Some(v) = cache.get(key) {
+                cache.del(&lock_key);          // release, no work needed
+                return Some(v);
+            }
+            // Still missing → I rebuild
             thread::sleep(Duration::from_millis(50));  // simulate expensive query
             let val = self.store.db.get(key)?;
             cache.set(key, &val, 60);
