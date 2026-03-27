@@ -19,7 +19,10 @@ pub fn demo_keepalive(base_url: &str) {
         let body = resp.text().unwrap();
         println!(
             "    GET {:12} -> {} {} ({:?})",
-            path, status.as_u16(), body, req_start.elapsed()
+            path,
+            status.as_u16(),
+            body,
+            req_start.elapsed()
         );
     }
     let reused_time = start.elapsed();
@@ -36,7 +39,10 @@ pub fn demo_keepalive(base_url: &str) {
         let body = resp.text().unwrap();
         println!(
             "    GET {:12} -> {} {} ({:?})",
-            path, status.as_u16(), body, req_start.elapsed()
+            path,
+            status.as_u16(),
+            body,
+            req_start.elapsed()
         );
     }
     let fresh_time = start.elapsed();
@@ -46,7 +52,10 @@ pub fn demo_keepalive(base_url: &str) {
         "\n  Pooled is ~{:.0}% faster — 2nd/3rd requests skip TCP handshake!",
         (1.0 - reused_time.as_secs_f64() / fresh_time.as_secs_f64()) * 100.0
     );
-    println!("  Try: curl -v {}/ — look for 'Connection: keep-alive' in response\n", base_url);
+    println!(
+        "  Try: curl -v {}/ — look for 'Connection: keep-alive' in response\n",
+        base_url
+    );
 }
 
 /// Demonstrates HOL blocking: HTTP/1.1 sequential vs HTTP/1.1 multi-conn vs HTTP/2 multiplexed.
@@ -69,7 +78,10 @@ pub fn demo_hol_blocking(base_url: &str) {
         let resp = http1_client.get(&url).send().unwrap();
         println!(
             "    GET {:12} -> {} version={:?} ({:?})",
-            path, resp.status(), resp.version(), req_start.elapsed()
+            path,
+            resp.status(),
+            resp.version(),
+            req_start.elapsed()
         );
     }
     println!("  HTTP/1.1 total: {:?}", start.elapsed());
@@ -83,7 +95,10 @@ pub fn demo_hol_blocking(base_url: &str) {
         let resp = http1_client.get(&url).send().unwrap();
         println!(
             "    GET {:12} -> {} version={:?} ({:?})",
-            path, resp.status(), resp.version(), req_start.elapsed()
+            path,
+            resp.status(),
+            resp.version(),
+            req_start.elapsed()
         );
     }
     println!("  HTTP/1.1 total: {:?}", start.elapsed());
@@ -99,13 +114,19 @@ pub fn demo_hol_blocking(base_url: &str) {
     let base2 = base_url.to_string();
 
     let h1 = thread::spawn(move || {
-        let client = reqwest::blocking::ClientBuilder::new().http1_only().build().unwrap();
+        let client = reqwest::blocking::ClientBuilder::new()
+            .http1_only()
+            .build()
+            .unwrap();
         let t = Instant::now();
         let r = client.get(format!("{}/slow", base1)).send().unwrap();
         (r.status().to_string(), r.version(), t.elapsed())
     });
     let h2 = thread::spawn(move || {
-        let client = reqwest::blocking::ClientBuilder::new().http1_only().build().unwrap();
+        let client = reqwest::blocking::ClientBuilder::new()
+            .http1_only()
+            .build()
+            .unwrap();
         let t = Instant::now();
         let r = client.get(format!("{}/health", base2)).send().unwrap();
         (r.status().to_string(), r.version(), t.elapsed())
@@ -157,7 +178,10 @@ pub fn demo_hol_blocking(base_url: &str) {
     });
 
     for (i, path, status, version, elapsed) in &browser_results {
-        println!("    req {} GET {:12} -> {} {:?} ({:?})", i, path, status, version, elapsed);
+        println!(
+            "    req {} GET {:12} -> {} {:?} ({:?})",
+            i, path, status, version, elapsed
+        );
     }
     println!("  HTTP/1.1 browser-style total: {:?}", start.elapsed());
     println!("  ^ All 6 ran in parallel! Pool auto-opened 6 TCP connections.");
@@ -195,13 +219,22 @@ pub fn demo_hol_blocking(base_url: &str) {
         )
     });
 
-    println!("    GET /slow        -> {} version={:?} ({:?})", slow_result.0, slow_result.1, slow_result.2);
-    println!("    GET /health      -> {} version={:?} ({:?})", health_result.0, health_result.1, health_result.2);
+    println!(
+        "    GET /slow        -> {} version={:?} ({:?})",
+        slow_result.0, slow_result.1, slow_result.2
+    );
+    println!(
+        "    GET /health      -> {} version={:?} ({:?})",
+        health_result.0, health_result.1, health_result.2
+    );
     println!("  HTTP/2 total: {:?}", start.elapsed());
     println!("  ^ /health returned instantly — didn't wait for /slow!\n");
 
     println!("  COMPARISON:");
     println!("  HTTP/1.1: /slow(500ms) → /health(1ms) = ~501ms total (sequential)");
     println!("  HTTP/2:   /slow(500ms) + /health(1ms) = ~500ms total (multiplexed)");
-    println!("  The {:?} format shows the ACTUAL protocol version from the wire.\n", "version=HTTP/2.0");
+    println!(
+        "  The {:?} format shows the ACTUAL protocol version from the wire.\n",
+        "version=HTTP/2.0"
+    );
 }

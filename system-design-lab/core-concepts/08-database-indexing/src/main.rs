@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # Database Indexing: B-Tree Implementation
 //!
 //! Demonstrates how database indexes work:
@@ -5,13 +6,11 @@
 //! - Index operations: search, insert, range queries
 //! - Performance characteristics
 
-use std::collections::VecDeque;
-
 // =============================================================================
 // B-Tree Node
 // =============================================================================
 
-const MAX_KEYS: usize = 3;  // Small for demonstration (real DBs use 100+)
+const MAX_KEYS: usize = 3; // Small for demonstration (real DBs use 100+)
 const MIN_KEYS: usize = MAX_KEYS / 2;
 
 #[derive(Debug, Clone)]
@@ -47,7 +46,10 @@ impl<K: Ord + Clone + std::fmt::Debug, V: Clone + std::fmt::Debug> BTreeNode<K, 
 
     /// Find the index where key should be or is located
     fn find_key_index(&self, key: &K) -> usize {
-        self.keys.iter().position(|k| k >= key).unwrap_or(self.keys.len())
+        self.keys
+            .iter()
+            .position(|k| k >= key)
+            .unwrap_or(self.keys.len())
     }
 
     /// Search for a key
@@ -195,7 +197,10 @@ impl<K: Ord + Clone + std::fmt::Debug, V: Clone + std::fmt::Debug> BTree<K, V> {
     }
 
     /// Print tree structure (for visualization)
-    pub fn print(&self) where K: std::fmt::Display {
+    pub fn print(&self)
+    where
+        K: std::fmt::Display,
+    {
         if let Some(ref root) = self.root {
             println!("B-Tree Structure:");
             self.print_node(root, 0);
@@ -204,7 +209,10 @@ impl<K: Ord + Clone + std::fmt::Debug, V: Clone + std::fmt::Debug> BTree<K, V> {
         }
     }
 
-    fn print_node(&self, node: &BTreeNode<K, V>, level: usize) where K: std::fmt::Display {
+    fn print_node(&self, node: &BTreeNode<K, V>, level: usize)
+    where
+        K: std::fmt::Display,
+    {
         let indent = "  ".repeat(level);
         let keys: Vec<String> = node.keys.iter().map(|k| format!("{}", k)).collect();
         println!("{}[{}]", indent, keys.join(", "));
@@ -265,7 +273,10 @@ fn measure_operations(n: usize) {
     println!("  Dataset size: {} items", n);
     println!("  B-Tree search (1000 queries): {:?}", btree_time);
     println!("  Linear search (1000 queries): {:?}", linear_time);
-    println!("  Speedup: {:.1}x", linear_time.as_nanos() as f64 / btree_time.as_nanos() as f64);
+    println!(
+        "  Speedup: {:.1}x",
+        linear_time.as_nanos() as f64 / btree_time.as_nanos() as f64
+    );
 }
 
 // =============================================================================
@@ -317,7 +328,8 @@ fn main() {
 
     // Demo 2: SQL Index behavior
     println!("\n--- SQL Index Behavior ---");
-    println!("
+    println!(
+        "
 Without index:  SELECT * FROM users WHERE age = 30
                 -> Full table scan: O(N)
 
@@ -329,7 +341,8 @@ Range queries work efficiently:
                 SELECT * FROM users WHERE age BETWEEN 25 AND 35
                 -> Find start position O(log N)
                 -> Scan leaves until end
-");
+"
+    );
 
     // Demo 3: Performance comparison
     println!("\n  ═══ Performance Comparison ═══\n");
@@ -345,7 +358,8 @@ Range queries work efficiently:
 
     // Demo 4: Index types explanation
     println!("\n--- Index Types ---");
-    println!("
+    println!(
+        "
 B-Tree Index (most common):
   - Good for: =, <, >, <=, >=, BETWEEN, LIKE 'prefix%'
   - Used by: PostgreSQL, MySQL (InnoDB)
@@ -364,11 +378,13 @@ B+ Tree (database variation):
 Covering Index:
   - Index contains all columns needed by query
   - No need to access table data (index-only scan)
-");
+"
+    );
 
     // Demo 5: When indexes help/hurt
     println!("\n  ═══ When to Use Indexes ═══");
-    println!("
+    println!(
+        "
 Good candidates for indexing:
   ✓ Primary keys (automatic)
   ✓ Foreign keys
@@ -386,7 +402,8 @@ Index overhead:
   - Slows down INSERT/UPDATE/DELETE
   - Uses disk space
   - Needs maintenance (rebalancing, fragmentation)
-");
+"
+    );
 
     println!("\n=== Demo Complete ===");
 }
@@ -431,6 +448,6 @@ mod tests {
         }
 
         let results = tree.range_search(&5, &10);
-        assert_eq!(results.len(), 6);  // 5, 6, 7, 8, 9, 10
+        assert_eq!(results.len(), 6); // 5, 6, 7, 8, 9, 10
     }
 }

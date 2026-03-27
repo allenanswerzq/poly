@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # Key-Value Store Implementation
 //!
 //! A mini LSM-tree based key-value store demonstrating:
@@ -110,7 +111,7 @@ impl BloomFilter {
 
 /// In-memory sorted storage using BTreeMap
 pub struct MemTable {
-    data: BTreeMap<String, Option<Vec<u8>>>,  // None = tombstone (deleted)
+    data: BTreeMap<String, Option<Vec<u8>>>, // None = tombstone (deleted)
     size_bytes: usize,
     max_size: usize,
 }
@@ -135,7 +136,7 @@ impl MemTable {
 
     pub fn delete(&mut self, key: String) {
         self.size_bytes += key.len();
-        self.data.insert(key, None);  // Tombstone
+        self.data.insert(key, None); // Tombstone
     }
 
     pub fn is_full(&self) -> bool {
@@ -165,7 +166,7 @@ impl MemTable {
 // =============================================================================
 
 #[derive(Serialize, Deserialize, Debug)]
-enum WalEntry {
+pub enum WalEntry {
     Put { key: String, value: Vec<u8> },
     Delete { key: String },
 }
@@ -178,10 +179,7 @@ pub struct Wal {
 
 impl Wal {
     pub fn new(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
 
         Ok(Self {
             file: BufWriter::new(file),
@@ -250,14 +248,14 @@ impl Wal {
 #[derive(Serialize, Deserialize)]
 struct SSTableEntry {
     key: String,
-    value: Option<Vec<u8>>,  // None = deleted
+    value: Option<Vec<u8>>, // None = deleted
 }
 
 /// Immutable sorted file on disk
 pub struct SSTable {
     path: PathBuf,
     bloom_filter: BloomFilter,
-    index: Vec<(String, u64)>,  // (first_key_in_block, offset)
+    index: Vec<(String, u64)>, // (first_key_in_block, offset)
 }
 
 impl SSTable {
@@ -334,7 +332,7 @@ impl SSTable {
             }
 
             // Since sorted, we can stop early
-            if entry.key > key.to_string() {
+            if entry.key.as_str() > key {
                 break;
             }
         }
@@ -375,7 +373,7 @@ impl KvStore {
         let wal_path = path.join("wal.log");
 
         // Replay WAL to rebuild memtable
-        let mut memtable = MemTable::new(64 * 1024);  // 64KB memtable
+        let mut memtable = MemTable::new(64 * 1024); // 64KB memtable
         for entry in Wal::replay(&wal_path)? {
             match entry {
                 WalEntry::Put { key, value } => memtable.put(key, value),
@@ -406,7 +404,7 @@ impl KvStore {
 
         // 3. Check if memtable needs flushing
         if memtable.is_full() {
-            drop(memtable);  // Release lock before flush
+            drop(memtable); // Release lock before flush
             self.flush_memtable()?;
         }
 
@@ -493,7 +491,7 @@ fn main() -> Result<()> {
 
     // Create temp directory for demo
     let temp_dir = std::env::temp_dir().join("kv_store_demo");
-    let _ = fs::remove_dir_all(&temp_dir);  // Clean up any existing
+    let _ = fs::remove_dir_all(&temp_dir); // Clean up any existing
 
     // Demo 1: Bloom Filter
     println!("\n  ═══ Bloom Filter Demo ═══");
@@ -506,8 +504,10 @@ fn main() -> Result<()> {
 
     println!("Inserted: {:?}", keys);
     println!("Contains 'apple': {}", bloom.might_contain("apple"));
-    println!("Contains 'grape': {} (should be false, but may have false positive)",
-             bloom.might_contain("grape"));
+    println!(
+        "Contains 'grape': {} (should be false, but may have false positive)",
+        bloom.might_contain("grape")
+    );
     println!("Contains 'mango': {}", bloom.might_contain("mango"));
 
     // Demo 2: MemTable
@@ -519,7 +519,12 @@ fn main() -> Result<()> {
     memtable.put("key3".to_string(), b"value3".to_vec());
 
     println!("MemTable entries: {}", memtable.len());
-    println!("Get 'key2': {:?}", memtable.get("key2").map(|v| v.as_ref().map(|b| String::from_utf8_lossy(b).to_string())));
+    println!(
+        "Get 'key2': {:?}",
+        memtable
+            .get("key2")
+            .map(|v| v.as_ref().map(|b| String::from_utf8_lossy(b).to_string()))
+    );
 
     memtable.delete("key2".to_string());
     println!("After delete 'key2': {:?}", memtable.get("key2"));
@@ -549,7 +554,12 @@ fn main() -> Result<()> {
     // Update
     println!("\nUpdating user:2...");
     store.put("user:2", b"Bobby")?;
-    println!("  user:2 = {:?}", store.get("user:2")?.map(|v| String::from_utf8_lossy(&v).to_string()));
+    println!(
+        "  user:2 = {:?}",
+        store
+            .get("user:2")?
+            .map(|v| String::from_utf8_lossy(&v).to_string())
+    );
 
     // Delete
     println!("\nDeleting user:3...");
@@ -566,18 +576,43 @@ fn main() -> Result<()> {
 
     // Verify data after flush
     println!("\nReading after flush...");
-    println!("  item:0 = {:?}", store.get("item:0")?.map(|v| String::from_utf8_lossy(&v).to_string()));
-    println!("  item:500 = {:?}", store.get("item:500")?.map(|v| String::from_utf8_lossy(&v).to_string()));
-    println!("  item:999 = {:?}", store.get("item:999")?.map(|v| String::from_utf8_lossy(&v).to_string()));
+    println!(
+        "  item:0 = {:?}",
+        store
+            .get("item:0")?
+            .map(|v| String::from_utf8_lossy(&v).to_string())
+    );
+    println!(
+        "  item:500 = {:?}",
+        store
+            .get("item:500")?
+            .map(|v| String::from_utf8_lossy(&v).to_string())
+    );
+    println!(
+        "  item:999 = {:?}",
+        store
+            .get("item:999")?
+            .map(|v| String::from_utf8_lossy(&v).to_string())
+    );
 
     // Demo 4: Recovery from WAL
     println!("\n--- WAL Recovery Demo ---");
-    drop(store);  // Close store
+    drop(store); // Close store
 
     let store2 = KvStore::open(&temp_dir)?;
     println!("Reopened store, checking data...");
-    println!("  user:1 = {:?}", store2.get("user:1")?.map(|v| String::from_utf8_lossy(&v).to_string()));
-    println!("  item:100 = {:?}", store2.get("item:100")?.map(|v| String::from_utf8_lossy(&v).to_string()));
+    println!(
+        "  user:1 = {:?}",
+        store2
+            .get("user:1")?
+            .map(|v| String::from_utf8_lossy(&v).to_string())
+    );
+    println!(
+        "  item:100 = {:?}",
+        store2
+            .get("item:100")?
+            .map(|v| String::from_utf8_lossy(&v).to_string())
+    );
 
     // Cleanup
     let _ = fs::remove_dir_all(&temp_dir);

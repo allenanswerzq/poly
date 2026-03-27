@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # File Storage (Dropbox) - Mini Implementation
 //!
 //! Demonstrates:
@@ -9,7 +10,7 @@
 //! Run: cargo run -p file-storage
 
 use dashmap::DashMap;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -230,9 +231,9 @@ impl FileSystem {
         }
 
         // Check history
-        self.versions.get(path).and_then(|history| {
-            history.iter().find(|m| m.version == version).cloned()
-        })
+        self.versions
+            .get(path)
+            .and_then(|history| history.iter().find(|m| m.version == version).cloned())
     }
 
     fn restore_version(&self, path: &str, version: u64) -> Option<FileMetadata> {
@@ -275,11 +276,12 @@ impl SyncService {
         let metadata = self.fs.upload(path, data);
         let cursor = self.cursor.fetch_add(1, Ordering::SeqCst) + 1;
 
-        let change = if self.fs.get_metadata(path).map(|m| m.version).unwrap_or(0) == metadata.version {
-            SyncChange::FileAdded(metadata.clone())
-        } else {
-            SyncChange::FileModified(metadata.clone())
-        };
+        let change =
+            if self.fs.get_metadata(path).map(|m| m.version).unwrap_or(0) == metadata.version {
+                SyncChange::FileAdded(metadata.clone())
+            } else {
+                SyncChange::FileModified(metadata.clone())
+            };
 
         self.change_log.lock().push((cursor, change));
         metadata
@@ -386,11 +388,19 @@ fn main() {
 
     // File modification (versioning)
     println!("\n  ═══ File Versioning ═══");
-    let v1 = service.fs.get_metadata("/documents/hello.txt").unwrap().version;
+    let v1 = service
+        .fs
+        .get_metadata("/documents/hello.txt")
+        .unwrap()
+        .version;
     println!("Current version: {}", v1);
 
     service.upload("/documents/hello.txt", b"Updated content!");
-    let v2 = service.fs.get_metadata("/documents/hello.txt").unwrap().version;
+    let v2 = service
+        .fs
+        .get_metadata("/documents/hello.txt")
+        .unwrap()
+        .version;
     println!("After update: v{}", v2);
 
     // List versions
@@ -401,11 +411,7 @@ fn main() {
     // Restore old version
     service.fs.restore_version("/documents/hello.txt", v1);
     let restored = service.fs.download("/documents/hello.txt").unwrap();
-    println!(
-        "Restored v{}: '{}'",
-        v1,
-        String::from_utf8_lossy(&restored)
-    );
+    println!("Restored v{}: '{}'", v1, String::from_utf8_lossy(&restored));
     println!();
 
     // Sync protocol

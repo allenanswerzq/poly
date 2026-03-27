@@ -1,9 +1,9 @@
+use bytes::Bytes;
+use pingora::http::ResponseHeader;
+use pingora::lb::{selection::RoundRobin, LoadBalancer};
 use pingora::prelude::*;
 use pingora::proxy::{ProxyHttp, Session};
 use pingora::upstreams::peer::HttpPeer;
-use pingora::lb::{selection::RoundRobin, LoadBalancer};
-use pingora::http::ResponseHeader;
-use bytes::Bytes;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::thread;
@@ -26,15 +26,14 @@ pub fn demo_pingora_auth() {
     #[async_trait::async_trait]
     impl ProxyHttp for AuthProxy {
         type CTX = Option<String>;
-        fn new_ctx(&self) -> Self::CTX { None }
+        fn new_ctx(&self) -> Self::CTX {
+            None
+        }
 
         /// Auth gate — runs BEFORE routing. Rejects unauthenticated requests.
-        async fn request_filter(
-            &self,
-            session: &mut Session,
-            ctx: &mut Self::CTX,
-        ) -> Result<bool> {
-            let api_key = session.req_header()
+        async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
+            let api_key = session
+                .req_header()
                 .headers
                 .get("x-api-key")
                 .and_then(|v| v.to_str().ok())
@@ -51,7 +50,9 @@ pub fn demo_pingora_auth() {
                     resp.insert_header("Content-Type", "application/json")?;
                     resp.insert_header("Content-Length", body.len().to_string())?;
                     session.write_response_header(Box::new(resp), false).await?;
-                    session.write_response_body(Some(Bytes::from_static(body)), true).await?;
+                    session
+                        .write_response_body(Some(Bytes::from_static(body)), true)
+                        .await?;
                     Ok(true)
                 }
             }
@@ -72,8 +73,7 @@ pub fn demo_pingora_auth() {
                 None
             };
 
-            let upstream =
-                upstream.ok_or_else(|| pingora::Error::new_str("no route matched"))?;
+            let upstream = upstream.ok_or_else(|| pingora::Error::new_str("no route matched"))?;
 
             let peer = HttpPeer::new(upstream, false, String::new());
             Ok(Box::new(peer))
@@ -137,7 +137,8 @@ pub fn demo_pingora_auth() {
         Err(e) => println!("    No key:      GET /api/users/1    → ERROR: {}", e),
     }
 
-    match client.get("http://127.0.0.1:6189/api/users/1")
+    match client
+        .get("http://127.0.0.1:6189/api/users/1")
         .header("X-Api-Key", "sk-wrong")
         .send()
     {
@@ -149,28 +150,36 @@ pub fn demo_pingora_auth() {
         Err(e) => println!("    Bad key:     GET /api/users/1    → ERROR: {}", e),
     }
 
-    match client.get("http://127.0.0.1:6189/api/users/1")
+    match client
+        .get("http://127.0.0.1:6189/api/users/1")
         .header("X-Api-Key", "sk-valid-key-123")
         .send()
     {
         Ok(resp) => {
             let status = resp.status();
             let body: Value = resp.json().unwrap_or_default();
-            println!("    Valid key:   GET /api/users/1    → {} service={:?}",
-                status, body.get("service").unwrap_or(&json!("?")));
+            println!(
+                "    Valid key:   GET /api/users/1    → {} service={:?}",
+                status,
+                body.get("service").unwrap_or(&json!("?"))
+            );
         }
         Err(e) => println!("    Valid key:   GET /api/users/1    → ERROR: {}", e),
     }
 
-    match client.get("http://127.0.0.1:6189/api/orders/42")
+    match client
+        .get("http://127.0.0.1:6189/api/orders/42")
         .header("X-Api-Key", "sk-admin-key-456")
         .send()
     {
         Ok(resp) => {
             let status = resp.status();
             let body: Value = resp.json().unwrap_or_default();
-            println!("    Admin key:   GET /api/orders/42  → {} service={:?}",
-                status, body.get("service").unwrap_or(&json!("?")));
+            println!(
+                "    Admin key:   GET /api/orders/42  → {} service={:?}",
+                status,
+                body.get("service").unwrap_or(&json!("?"))
+            );
         }
         Err(e) => println!("    Admin key:   GET /api/orders/42  → ERROR: {}", e),
     }

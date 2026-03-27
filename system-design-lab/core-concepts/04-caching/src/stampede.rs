@@ -51,7 +51,10 @@ struct StampedeGuard {
 
 impl StampedeGuard {
     fn new(store: Arc<Store>) -> Self {
-        Self { store, db_hits: AtomicI32::new(0) }
+        Self {
+            store,
+            db_hits: AtomicI32::new(0),
+        }
     }
 
     /// Read with SETNX-based stampede protection.
@@ -60,7 +63,9 @@ impl StampedeGuard {
     ///   Lost → spin-wait until winner fills cache.
     fn get(&self, cache: &Cache, key: &str) -> Option<String> {
         // Fast path: cache hit
-        if let Some(v) = cache.get(key) { return Some(v); }
+        if let Some(v) = cache.get(key) {
+            return Some(v);
+        }
 
         let lock_key = format!("lock:{}", key);
 
@@ -68,11 +73,11 @@ impl StampedeGuard {
             // Won the lock — but another thread may have filled cache
             // between our miss and our lock acquire. Double-check.
             if let Some(v) = cache.get(key) {
-                cache.del(&lock_key);          // release, no work needed
+                cache.del(&lock_key); // release, no work needed
                 return Some(v);
             }
             // Still missing → I rebuild
-            thread::sleep(Duration::from_millis(50));  // simulate expensive query
+            thread::sleep(Duration::from_millis(50)); // simulate expensive query
             let val = self.store.db.get(key)?;
             cache.set(key, &val, 60);
             cache.del(&lock_key);
@@ -82,7 +87,9 @@ impl StampedeGuard {
             // Lost the lock → someone else is rebuilding. Wait for them.
             for _ in 0..50 {
                 thread::sleep(Duration::from_millis(10));
-                if let Some(v) = cache.get(key) { return Some(v); }
+                if let Some(v) = cache.get(key) {
+                    return Some(v);
+                }
             }
             // Timeout: lock holder may have crashed.
             // Lock auto-expires (TTL), next request retries.
@@ -92,16 +99,22 @@ impl StampedeGuard {
 
     /// Read WITHOUT stampede protection (for comparison).
     fn get_naive(&self, cache: &Cache, key: &str) -> Option<String> {
-        if let Some(v) = cache.get(key) { return Some(v); }
-        thread::sleep(Duration::from_millis(50));  // simulate expensive query
+        if let Some(v) = cache.get(key) {
+            return Some(v);
+        }
+        thread::sleep(Duration::from_millis(50)); // simulate expensive query
         let val = self.store.db.get(key)?;
         cache.set(key, &val, 60);
         self.db_hits.fetch_add(1, Ordering::SeqCst);
         Some(val)
     }
 
-    fn reset_hits(&self) { self.db_hits.store(0, Ordering::SeqCst); }
-    fn hits(&self) -> i32 { self.db_hits.load(Ordering::SeqCst) }
+    fn reset_hits(&self) {
+        self.db_hits.store(0, Ordering::SeqCst);
+    }
+    fn hits(&self) -> i32 {
+        self.db_hits.load(Ordering::SeqCst)
+    }
 }
 
 pub fn demo() {
@@ -111,7 +124,9 @@ pub fn demo() {
     let guard = Arc::new(StampedeGuard::new(Arc::clone(&store)));
 
     // Seed DB with an expensive-to-compute value
-    store.db.set("product:hot", r#"{"name":"Widget","price":9.99}"#);
+    store
+        .db
+        .set("product:hot", r#"{"name":"Widget","price":9.99}"#);
 
     // ── Without lock: all threads hit DB ──
 
@@ -128,7 +143,9 @@ pub fn demo() {
             g.get_naive(&cache, "product:hot");
         }));
     }
-    for h in handles { h.join().unwrap(); }
+    for h in handles {
+        h.join().unwrap();
+    }
     println!("      DB hits: {} (all 10 threads hit DB)\n", guard.hits());
 
     // ── With SETNX lock: only 1 thread rebuilds ──
@@ -146,6 +163,8 @@ pub fn demo() {
             g.get(&cache, "product:hot");
         }));
     }
-    for h in handles { h.join().unwrap(); }
+    for h in handles {
+        h.join().unwrap();
+    }
     println!("      DB hits: {} (only 1 thread hit DB)\n", guard.hits());
 }

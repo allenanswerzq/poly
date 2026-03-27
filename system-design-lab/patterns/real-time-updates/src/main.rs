@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # Real-Time Updates Pattern Demos
 //!
 //! This module demonstrates patterns for pushing real-time updates to clients:
@@ -181,8 +182,10 @@ impl PresenceSystem {
     }
 
     fn set_offline(&self, user_id: &str) {
-        self.status
-            .insert(user_id.to_string(), (PresenceStatus::Offline, Instant::now()));
+        self.status.insert(
+            user_id.to_string(),
+            (PresenceStatus::Offline, Instant::now()),
+        );
         self.notify_watchers(user_id, PresenceStatus::Offline);
     }
 
@@ -206,8 +209,7 @@ impl PresenceSystem {
             .get(user_id)
             .map(|entry| {
                 let (status, last_seen) = entry.value();
-                if *status == PresenceStatus::Online
-                    && last_seen.elapsed() > self.heartbeat_timeout
+                if *status == PresenceStatus::Online && last_seen.elapsed() > self.heartbeat_timeout
                 {
                     PresenceStatus::Away // Stale heartbeat
                 } else {
@@ -445,8 +447,8 @@ fn main() {
 
     // Create subscribers (simulated - in real code these would be async)
     let mut rx1 = broadcaster.subscribe("sub1");
-    let mut rx2 = broadcaster.subscribe("sub2");
-    let mut rx3 = broadcaster.subscribe("sub3");
+    let rx2 = broadcaster.subscribe("sub2");
+    let rx3 = broadcaster.subscribe("sub3");
 
     // Broadcast
     broadcaster.broadcast("Breaking news!".to_string());
@@ -456,7 +458,7 @@ fn main() {
 
     // Check messages (would normally be async poll)
     let mut count = 0;
-    while let Ok(Some(msg)) = rx1.try_next() {
+    while let Ok(msg) = rx1.try_recv() {
         count += 1;
         println!("sub1 received: {}", msg);
     }

@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # URL Shortener Implementation
 //!
 //! A complete URL shortener demonstrating:
@@ -53,7 +54,7 @@ pub fn generate_hash_id(url: &str, length: usize) -> String {
 /// Strategy 2: Counter-based ID generation
 pub struct CounterIdGenerator {
     counter: AtomicU64,
-    prefix: u8,  // Server ID for distributed uniqueness
+    prefix: u8, // Server ID for distributed uniqueness
 }
 
 impl CounterIdGenerator {
@@ -121,9 +122,7 @@ impl Url {
     }
 
     pub fn is_expired(&self) -> bool {
-        self.expires_at
-            .map(|exp| exp < Utc::now())
-            .unwrap_or(false)
+        self.expires_at.map(|exp| exp < Utc::now()).unwrap_or(false)
     }
 }
 
@@ -165,14 +164,18 @@ impl UrlShortener {
         Self {
             urls: DashMap::new(),
             cache: DashMap::new(),
-            cache_ttl: Duration::from_secs(300),  // 5 minute cache
+            cache_ttl: Duration::from_secs(300), // 5 minute cache
             id_generator: id_type,
             clicks: DashMap::new(),
         }
     }
 
     /// Shorten a URL
-    pub fn shorten(&self, long_url: &str, custom_alias: Option<&str>) -> Result<String, &'static str> {
+    pub fn shorten(
+        &self,
+        long_url: &str,
+        custom_alias: Option<&str>,
+    ) -> Result<String, &'static str> {
         // Check if URL already exists (deduplication)
         for entry in self.urls.iter() {
             if entry.value().long_url == long_url {
@@ -273,7 +276,8 @@ impl UrlShortener {
     /// Get URL statistics
     pub fn get_stats(&self, short_code: &str) -> Option<UrlStats> {
         self.urls.get(short_code).map(|url| {
-            let click_count = self.clicks
+            let click_count = self
+                .clicks
                 .get(short_code)
                 .map(|events| events.len() as u64)
                 .unwrap_or(0);
@@ -316,7 +320,11 @@ fn main() {
 
     // Same URL = same hash
     let hash_id2 = generate_hash_id("https://example.com/very/long/url/path", 7);
-    println!("Same URL hash: {} (deterministic: {})", hash_id2, hash_id == hash_id2);
+    println!(
+        "Same URL hash: {} (deterministic: {})",
+        hash_id2,
+        hash_id == hash_id2
+    );
 
     // Counter-based
     let counter_gen = CounterIdGenerator::new(1);
@@ -352,17 +360,13 @@ fn main() {
     }
 
     // Custom alias
-    let custom = shortener.shorten(
-        "https://mycompany.com/product",
-        Some("myproduct")
-    ).unwrap();
+    let custom = shortener
+        .shorten("https://mycompany.com/product", Some("myproduct"))
+        .unwrap();
     println!("  Custom alias: myproduct → {}", custom);
 
     // Try duplicate custom alias
-    let duplicate = shortener.shorten(
-        "https://other.com/stuff",
-        Some("myproduct"),
-    );
+    let duplicate = shortener.shorten("https://other.com/stuff", Some("myproduct"));
     println!("  Duplicate alias: {:?}", duplicate);
 
     // Demo 3: Resolution and caching
@@ -404,13 +408,20 @@ fn main() {
     println!("Daily URLs: {} million", daily_urls / 1_000_000);
     println!("Write/sec: ~{}", writes_per_sec);
     println!("Read/sec: ~{}", reads_per_sec);
-    println!("URLs over {} years: {} billion", years, total_urls / 1_000_000_000);
+    println!(
+        "URLs over {} years: {} billion",
+        years,
+        total_urls / 1_000_000_000
+    );
     println!("Storage needed: {} TB", storage_bytes / 1_000_000_000_000);
 
     // Base62 capacity
     let base62_7 = 62_u64.pow(7);
-    println!("\nBase62 capacity (7 chars): {} ({:.1} trillion)",
-             base62_7, base62_7 as f64 / 1e12);
+    println!(
+        "\nBase62 capacity (7 chars): {} ({:.1} trillion)",
+        base62_7,
+        base62_7 as f64 / 1e12
+    );
 
     println!("\n=== Demo Complete ===");
 }
@@ -449,18 +460,14 @@ mod tests {
     fn test_custom_alias() {
         let shortener = UrlShortener::new(IdGeneratorType::Random);
 
-        let code = shortener.shorten(
-            "https://example.com",
-            Some("custom"),
-        ).unwrap();
+        let code = shortener
+            .shorten("https://example.com", Some("custom"))
+            .unwrap();
 
         assert_eq!(code, "custom");
 
         // Duplicate should fail
-        let result = shortener.shorten(
-            "https://other.com",
-            Some("custom"),
-        );
+        let result = shortener.shorten("https://other.com", Some("custom"));
         assert!(result.is_err());
     }
 

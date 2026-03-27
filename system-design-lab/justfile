@@ -1,0 +1,45 @@
+# System Design Lab — justfile
+# Run: just <recipe>
+
+# Default: show available recipes
+default:
+    @just --list
+
+# Format all code
+fmt:
+    cargo fmt --all
+
+# Check formatting (CI-friendly, no changes)
+fmt-check:
+    cargo fmt --all -- --check
+
+# Lint with clippy (all targets)
+clippy:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# Lint allowing warnings (just show them)
+clippy-warn:
+    cargo clippy --workspace --all-targets
+
+# Build everything
+build:
+    cargo build --workspace
+
+# Check without building (fast)
+check:
+    cargo check --workspace
+
+# Run a specific crate: just run caching
+run crate:
+    cargo run -p {{crate}}
+
+# Run all tests
+test:
+    cargo test --workspace
+
+# Format + clippy + build (pre-commit check)
+pre-commit: fmt clippy build
+
+# Clean build artifacts
+clean:
+    cargo clean

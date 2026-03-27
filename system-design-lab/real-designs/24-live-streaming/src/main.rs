@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Live Streaming Platform — Mini Implementation
 //!
 //! Simulates the core pipeline of a live streaming system:
@@ -12,12 +13,11 @@
 //! Run: cargo run -p live-streaming
 
 use dashmap::DashMap;
-use parking_lot::RwLock;
 use rand::Rng;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use uuid::Uuid;
 
 // =============================================================================
@@ -61,23 +61,28 @@ impl Quality {
     fn bitrate_kbps(&self) -> u32 {
         match self {
             Quality::Q1080p => 6000,
-            Quality::Q720p  => 3000,
-            Quality::Q480p  => 1500,
-            Quality::Q360p  => 500,
+            Quality::Q720p => 3000,
+            Quality::Q480p => 1500,
+            Quality::Q360p => 500,
         }
     }
 
     fn label(&self) -> &str {
         match self {
             Quality::Q1080p => "1080p",
-            Quality::Q720p  => "720p",
-            Quality::Q480p  => "480p",
-            Quality::Q360p  => "360p",
+            Quality::Q720p => "720p",
+            Quality::Q480p => "480p",
+            Quality::Q360p => "360p",
         }
     }
 
     fn all() -> &'static [Quality] {
-        &[Quality::Q1080p, Quality::Q720p, Quality::Q480p, Quality::Q360p]
+        &[
+            Quality::Q1080p,
+            Quality::Q720p,
+            Quality::Q480p,
+            Quality::Q360p,
+        ]
     }
 }
 
@@ -108,13 +113,16 @@ impl IngestServer {
 
     fn start_stream(&self, streamer: &str, title: &str) -> String {
         let id = Uuid::new_v4().to_string()[..8].to_string();
-        self.streams.insert(id.clone(), Stream {
-            id: id.clone(),
-            streamer: streamer.into(),
-            title: title.into(),
-            status: StreamStatus::Live,
-            started_at: Instant::now(),
-        });
+        self.streams.insert(
+            id.clone(),
+            Stream {
+                id: id.clone(),
+                streamer: streamer.into(),
+                title: title.into(),
+                status: StreamStatus::Live,
+                started_at: Instant::now(),
+            },
+        );
         self.raw_frames.insert(id.clone(), VecDeque::new());
         id
     }
@@ -140,18 +148,21 @@ struct Transcoder;
 impl Transcoder {
     // Simulate transcoding: raw frame → multiple quality segments
     fn transcode(raw_frame: &[u8], sequence: u64, stream_id: &str) -> Vec<VideoSegment> {
-        Quality::all().iter().map(|&quality| {
-            let ratio = quality.bitrate_kbps() as f64 / Quality::Q1080p.bitrate_kbps() as f64;
-            let size = (raw_frame.len() as f64 * ratio) as usize;
-            VideoSegment {
-                stream_id: stream_id.to_string(),
-                sequence,
-                quality,
-                duration_ms: 2000, // 2-second segments
-                size_bytes: size,
-                data: vec![0u8; size], // simulated data
-            }
-        }).collect()
+        Quality::all()
+            .iter()
+            .map(|&quality| {
+                let ratio = quality.bitrate_kbps() as f64 / Quality::Q1080p.bitrate_kbps() as f64;
+                let size = (raw_frame.len() as f64 * ratio) as usize;
+                VideoSegment {
+                    stream_id: stream_id.to_string(),
+                    sequence,
+                    quality,
+                    duration_ms: 2000, // 2-second segments
+                    size_bytes: size,
+                    data: vec![0u8; size], // simulated data
+                }
+            })
+            .collect()
     }
 }
 
@@ -174,11 +185,21 @@ impl OriginServer {
     }
 
     fn store_segment(&self, segment: VideoSegment) {
-        let key = format!("{}:{}:{}", segment.stream_id, segment.quality.label(), segment.sequence);
+        let key = format!(
+            "{}:{}:{}",
+            segment.stream_id,
+            segment.quality.label(),
+            segment.sequence
+        );
         self.segments.insert(key, segment);
     }
 
-    fn get_segment(&self, stream_id: &str, quality: Quality, sequence: u64) -> Option<VideoSegment> {
+    fn get_segment(
+        &self,
+        stream_id: &str,
+        quality: Quality,
+        sequence: u64,
+    ) -> Option<VideoSegment> {
         let key = format!("{}:{}:{}", stream_id, quality.label(), sequence);
         self.serve_count.fetch_add(1, Ordering::Relaxed);
         self.segments.get(&key).map(|s| s.clone())
@@ -208,7 +229,12 @@ impl CdnEdge {
         }
     }
 
-    fn get_segment(&self, stream_id: &str, quality: Quality, sequence: u64) -> Option<VideoSegment> {
+    fn get_segment(
+        &self,
+        stream_id: &str,
+        quality: Quality,
+        sequence: u64,
+    ) -> Option<VideoSegment> {
         let key = format!("{}:{}:{}", stream_id, quality.label(), sequence);
 
         // Check edge cache first
@@ -246,17 +272,21 @@ impl ChatService {
     }
 
     fn send(&self, stream_id: &str, user: &str, message: &str) {
-        self.messages.entry(stream_id.to_string()).or_default().push(ChatMessage {
-            stream_id: stream_id.to_string(),
-            user: user.into(),
-            message: message.into(),
-            timestamp: Instant::now(),
-        });
+        self.messages
+            .entry(stream_id.to_string())
+            .or_default()
+            .push(ChatMessage {
+                stream_id: stream_id.to_string(),
+                user: user.into(),
+                message: message.into(),
+                timestamp: Instant::now(),
+            });
         self.total_messages.fetch_add(1, Ordering::Relaxed);
     }
 
     fn get_recent(&self, stream_id: &str, count: usize) -> Vec<ChatMessage> {
-        self.messages.get(stream_id)
+        self.messages
+            .get(stream_id)
             .map(|msgs| msgs.iter().rev().take(count).cloned().collect::<Vec<_>>())
             .unwrap_or_default()
     }
@@ -273,15 +303,22 @@ struct ViewerCounter {
 
 impl ViewerCounter {
     fn new() -> Self {
-        Self { counts: DashMap::new(), peak: DashMap::new() }
+        Self {
+            counts: DashMap::new(),
+            peak: DashMap::new(),
+        }
     }
 
     fn join(&self, stream_id: &str) {
-        let count = self.counts.entry(stream_id.to_string())
+        let count = self
+            .counts
+            .entry(stream_id.to_string())
             .or_insert_with(|| AtomicUsize::new(0));
         let new_count = count.fetch_add(1, Ordering::Relaxed) + 1;
 
-        let peak = self.peak.entry(stream_id.to_string())
+        let peak = self
+            .peak
+            .entry(stream_id.to_string())
             .or_insert_with(|| AtomicUsize::new(0));
         peak.fetch_max(new_count, Ordering::Relaxed);
     }
@@ -293,11 +330,17 @@ impl ViewerCounter {
     }
 
     fn get_count(&self, stream_id: &str) -> usize {
-        self.counts.get(stream_id).map(|c| c.load(Ordering::Relaxed)).unwrap_or(0)
+        self.counts
+            .get(stream_id)
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0)
     }
 
     fn get_peak(&self, stream_id: &str) -> usize {
-        self.peak.get(stream_id).map(|p| p.load(Ordering::Relaxed)).unwrap_or(0)
+        self.peak
+            .get(stream_id)
+            .map(|p| p.load(Ordering::Relaxed))
+            .unwrap_or(0)
     }
 }
 
@@ -346,21 +389,29 @@ fn main() {
             println!("    Raw frame: {} bytes", raw_frame.len());
             println!("    Transcoded to:");
             for seg in &segments {
-                println!("      {} → {} bytes ({}kbps)",
-                    seg.quality.label(), seg.size_bytes, seg.quality.bitrate_kbps());
+                println!(
+                    "      {} → {} bytes ({}kbps)",
+                    seg.quality.label(),
+                    seg.size_bytes,
+                    seg.quality.bitrate_kbps()
+                );
             }
             println!();
         }
         sequence += 1;
     }
-    println!("    Transcoded {} segments × {} qualities = {} total segments stored.\n",
-        sequence, Quality::all().len(), sequence * Quality::all().len() as u64);
+    println!(
+        "    Transcoded {} segments × {} qualities = {} total segments stored.\n",
+        sequence,
+        Quality::all().len(),
+        sequence * Quality::all().len() as u64
+    );
 
     // ── Step 3: CDN distribution ──
     println!("━━━ 3. CDN — Edge Caching & Distribution ━━━\n");
 
     // Simulate 100 viewers across 3 regions requesting segments
-    let mut rng = rand::thread_rng();
+    let rng = rand::thread_rng();
     let edges = [&cdn_us, &cdn_eu, &cdn_asia];
     let viewer_distribution = [50, 30, 20]; // US: 50, EU: 30, Asia: 20
 
@@ -379,38 +430,55 @@ fn main() {
         let hits = edge.cache_hits.load(Ordering::Relaxed);
         let misses = edge.cache_misses.load(Ordering::Relaxed);
         let total = hits + misses;
-        let hit_rate = if total > 0 { hits as f64 / total as f64 * 100.0 } else { 0.0 };
-        println!("    {}: {} requests, {} hits, {} misses ({:.1}% hit rate)",
-            edge.name, total, hits, misses, hit_rate);
+        let hit_rate = if total > 0 {
+            hits as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        };
+        println!(
+            "    {}: {} requests, {} hits, {} misses ({:.1}% hit rate)",
+            edge.name, total, hits, misses, hit_rate
+        );
     }
 
     let origin_serves = origin.serve_count.load(Ordering::Relaxed);
-    println!("\n    Origin served {} requests (CDN absorbed the rest)", origin_serves);
-    println!("    Without CDN: {} requests would hit origin\n",
-        100 * sequence); // every viewer × every segment
+    println!(
+        "\n    Origin served {} requests (CDN absorbed the rest)",
+        origin_serves
+    );
+    println!(
+        "    Without CDN: {} requests would hit origin\n",
+        100 * sequence
+    ); // every viewer × every segment
 
     // ── Step 4: Adaptive bitrate ──
     println!("━━━ 4. Adaptive Bitrate — Quality Switching ━━━\n");
 
     let qualities_by_bandwidth = [
         (10000, Quality::Q1080p),
-        (4000,  Quality::Q720p),
-        (2000,  Quality::Q480p),
-        (800,   Quality::Q360p),
+        (4000, Quality::Q720p),
+        (2000, Quality::Q480p),
+        (800, Quality::Q360p),
     ];
 
     println!("    Viewer's network fluctuates → player switches quality:\n");
     let bandwidth_samples = [8000, 5000, 1500, 3500, 7000];
     for (i, &bw) in bandwidth_samples.iter().enumerate() {
-        let quality = qualities_by_bandwidth.iter()
+        let quality = qualities_by_bandwidth
+            .iter()
             .find(|(min_bw, _)| bw >= *min_bw)
             .map(|(_, q)| q)
             .unwrap_or(&Quality::Q360p);
 
         let seg = cdn_us.get_segment(&stream_id, *quality, i as u64 % sequence);
         if let Some(seg) = seg {
-            println!("    Segment {}: bandwidth={}kbps → {} ({} bytes)",
-                i, bw, quality.label(), seg.size_bytes);
+            println!(
+                "    Segment {}: bandwidth={}kbps → {} ({} bytes)",
+                i,
+                bw,
+                quality.label(),
+                seg.size_bytes
+            );
         }
     }
     println!("\n    Player automatically picks best quality for current bandwidth.\n");
@@ -431,7 +499,10 @@ fn main() {
         chat.send(&stream_id, user, msg);
     }
 
-    println!("    {} messages sent", chat.total_messages.load(Ordering::Relaxed));
+    println!(
+        "    {} messages sent",
+        chat.total_messages.load(Ordering::Relaxed)
+    );
     println!("    Recent messages (most recent first):");
     for msg in chat.get_recent(&stream_id, 4) {
         println!("      {}: {}", msg.user, msg.message);
@@ -443,8 +514,13 @@ fn main() {
     println!("    Peak viewers:    {}", viewers.get_peak(&stream_id));
 
     // Some viewers leave
-    for _ in 0..20 { viewers.leave(&stream_id); }
-    println!("    After 20 viewers leave: {}", viewers.get_count(&stream_id));
+    for _ in 0..20 {
+        viewers.leave(&stream_id);
+    }
+    println!(
+        "    After 20 viewers leave: {}",
+        viewers.get_count(&stream_id)
+    );
 
     // ── Summary ──
     println!("\n━━━ Architecture Summary ━━━\n");

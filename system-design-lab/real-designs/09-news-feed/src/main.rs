@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # News Feed (Facebook/Twitter) - Mini Implementation
 //!
 //! Demonstrates:
@@ -12,7 +13,7 @@
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -371,7 +372,10 @@ fn main() {
     println!("\n  ═══ Creating Posts ═══");
 
     let p1 = feed.create_post("bob", "Just had the best coffee! ☕");
-    println!("Bob posted (fan-out to {} followers)", feed.graph.follower_count("bob"));
+    println!(
+        "Bob posted (fan-out to {} followers)",
+        feed.graph.follower_count("bob")
+    );
 
     let p2 = feed.create_post("charlie", "Working on something exciting!");
     println!("Charlie posted");

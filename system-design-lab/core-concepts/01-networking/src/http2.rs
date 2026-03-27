@@ -10,8 +10,16 @@ pub fn demo_multiplexing(base_url: &str) {
     println!("\n  ═══ demo_http2_multiplexing ═══\n");
 
     let paths = vec![
-        "/", "/health", "/api/users", "/slow", "/",
-        "/health", "/api/users", "/slow", "/health", "/",
+        "/",
+        "/health",
+        "/api/users",
+        "/slow",
+        "/",
+        "/health",
+        "/api/users",
+        "/slow",
+        "/health",
+        "/",
     ];
 
     println!("  HTTP/1.1 — 10 requests SEQUENTIAL (one connection):\n");
@@ -27,11 +35,18 @@ pub fn demo_multiplexing(base_url: &str) {
         let resp = http1_client.get(&url).send().unwrap();
         println!(
             "    req {:2} GET {:12} -> {} {:?} ({:?})",
-            i + 1, path, resp.status(), resp.version(), req_start.elapsed()
+            i + 1,
+            path,
+            resp.status(),
+            resp.version(),
+            req_start.elapsed()
         );
     }
     let http1_total = start.elapsed();
-    println!("  HTTP/1.1 total: {:?} (sequential — each waits for previous)\n", http1_total);
+    println!(
+        "  HTTP/1.1 total: {:?} (sequential — each waits for previous)\n",
+        http1_total
+    );
 
     println!("  HTTP/2 — 10 requests CONCURRENT (one multiplexed connection):\n");
 
@@ -54,7 +69,13 @@ pub fn demo_multiplexing(base_url: &str) {
             handles.push(tokio::spawn(async move {
                 let req_start = Instant::now();
                 let resp = client.get(&url).send().await.unwrap();
-                (i + 1, path, resp.status(), resp.version(), req_start.elapsed())
+                (
+                    i + 1,
+                    path,
+                    resp.status(),
+                    resp.version(),
+                    req_start.elapsed(),
+                )
             }));
         }
 
@@ -67,16 +88,31 @@ pub fn demo_multiplexing(base_url: &str) {
     });
 
     for (i, path, status, version, elapsed) in &results {
-        println!("    req {:2} GET {:12} -> {} {:?} ({:?})", i, path, status, version, elapsed);
+        println!(
+            "    req {:2} GET {:12} -> {} {:?} ({:?})",
+            i, path, status, version, elapsed
+        );
     }
     let http2_total = start.elapsed();
-    println!("  HTTP/2 total: {:?} (all 10 flew concurrently!)\n", http2_total);
+    println!(
+        "  HTTP/2 total: {:?} (all 10 flew concurrently!)\n",
+        http2_total
+    );
 
     let speedup = http1_total.as_secs_f64() / http2_total.as_secs_f64();
     println!("  RESULTS:");
-    println!("  HTTP/1.1: {:?} (10 requests sequential on 1 connection)", http1_total);
-    println!("  HTTP/2:   {:?} (10 requests multiplexed on 1 connection)", http2_total);
-    println!("  Speedup:  {:.1}x faster with HTTP/2 multiplexing", speedup);
+    println!(
+        "  HTTP/1.1: {:?} (10 requests sequential on 1 connection)",
+        http1_total
+    );
+    println!(
+        "  HTTP/2:   {:?} (10 requests multiplexed on 1 connection)",
+        http2_total
+    );
+    println!(
+        "  Speedup:  {:.1}x faster with HTTP/2 multiplexing",
+        speedup
+    );
     println!();
     println!("  Binary framing format (what HTTP/2 uses on the wire):");
     println!("  ┌──────────┬────────┬───────┬────────────┬─────────┐");
@@ -111,7 +147,11 @@ pub fn demo_streaming(base_url: &str) {
         let (stream_result, r1, r2, r3) = tokio::join!(
             async {
                 let start = Instant::now();
-                let resp = client.get(format!("{}/stream/512", base_url_owned)).send().await.unwrap();
+                let resp = client
+                    .get(format!("{}/stream/512", base_url_owned))
+                    .send()
+                    .await
+                    .unwrap();
                 let version = resp.version();
                 let mut total = 0u64;
                 let mut chunk_count = 0u32;
@@ -127,7 +167,11 @@ pub fn demo_streaming(base_url: &str) {
             async {
                 tokio::time::sleep(Duration::from_millis(2)).await;
                 let start = Instant::now();
-                let resp = client.get(format!("{}/health", base_url_owned)).send().await.unwrap();
+                let resp = client
+                    .get(format!("{}/health", base_url_owned))
+                    .send()
+                    .await
+                    .unwrap();
                 let streamed_so_far = bytes_clone.load(Ordering::Relaxed);
                 let body = resp.text().await.unwrap();
                 ("/health", body, start.elapsed(), streamed_so_far)
@@ -135,7 +179,11 @@ pub fn demo_streaming(base_url: &str) {
             async {
                 tokio::time::sleep(Duration::from_millis(3)).await;
                 let start = Instant::now();
-                let resp = client.get(format!("{}/", base_url_owned)).send().await.unwrap();
+                let resp = client
+                    .get(format!("{}/", base_url_owned))
+                    .send()
+                    .await
+                    .unwrap();
                 let streamed_so_far = bytes_clone.load(Ordering::Relaxed);
                 let body = resp.text().await.unwrap();
                 ("/", body, start.elapsed(), streamed_so_far)
@@ -143,7 +191,11 @@ pub fn demo_streaming(base_url: &str) {
             async {
                 tokio::time::sleep(Duration::from_millis(4)).await;
                 let start = Instant::now();
-                let resp = client.get(format!("{}/api/users", base_url_owned)).send().await.unwrap();
+                let resp = client
+                    .get(format!("{}/api/users", base_url_owned))
+                    .send()
+                    .await
+                    .unwrap();
                 let streamed_so_far = bytes_clone.load(Ordering::Relaxed);
                 let body = resp.text().await.unwrap();
                 ("/api/users", body, start.elapsed(), streamed_so_far)
@@ -152,11 +204,18 @@ pub fn demo_streaming(base_url: &str) {
 
         let total_time = overall_start.elapsed();
         for (path, body, elapsed, streamed) in [r1, r2, r3] {
-            println!("    GET {:12} -> {} ({:?}) ← stream had {}KB when this finished",
-                path, body, elapsed, streamed / 1024);
+            println!(
+                "    GET {:12} -> {} ({:?}) ← stream had {}KB when this finished",
+                path,
+                body,
+                elapsed,
+                streamed / 1024
+            );
         }
-        println!("    GET /stream/512  -> {:?} {} bytes in {} chunks ({:?})",
-            stream_result.0, stream_result.1, stream_result.2, stream_result.3);
+        println!(
+            "    GET /stream/512  -> {:?} {} bytes in {} chunks ({:?})",
+            stream_result.0, stream_result.1, stream_result.2, stream_result.3
+        );
         println!("\n  Total time: {:?}", total_time);
     });
 

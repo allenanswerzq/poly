@@ -10,14 +10,14 @@
 //! 7. Event sourcing (append-only log → derive state)
 //! 8. Indexing effects on read/write performance
 
-mod normalized;
 mod denormalized;
 mod document_store;
-mod key_value;
-mod polymorphic;
-mod hierarchical;
 mod event_sourcing;
+mod hierarchical;
 mod indexing;
+mod key_value;
+mod normalized;
+mod polymorphic;
 
 fn main() {
     println!("╔══════════════════════════════════════════════════╗");

@@ -60,18 +60,20 @@ impl WriteThrough {
         while !cache.try_lock(&lock_key, 5) {
             thread::sleep(Duration::from_millis(1));
         }
-        self.store.db.set(key, value);                  // 1. DB first (source of truth)
-        cache.set(key, value, 300);            // 2. Cache second
-        // Read back while still holding the lock — proves consistency
+        self.store.db.set(key, value); // 1. DB first (source of truth)
+        cache.set(key, value, 300); // 2. Cache second
+                                    // Read back while still holding the lock — proves consistency
         let c = cache.get(key).unwrap_or_default();
         let d = self.store.db.get(key).unwrap_or_default();
-        cache.del(&lock_key);                  // 3. Release lock
+        cache.del(&lock_key); // 3. Release lock
         (c, d)
     }
 
     /// Read: cache → miss → DB → populate (self-heal on miss)
     fn get(&self, key: &str) -> Option<String> {
-        if let Some(v) = self.store.cache.get(key) { return Some(v); }
+        if let Some(v) = self.store.cache.get(key) {
+            return Some(v);
+        }
         let v = self.store.db.get(key)?;
         self.store.cache.set(key, &v, 300);
         Some(v)
@@ -91,8 +93,11 @@ pub fn demo() {
 
     println!("    SET user:1, user:2 (DB + cache, SETNX locked)");
     println!("    GET user:1 → {:?}", wt.get("user:1"));
-    println!("    consistent: cache={:?} == db={:?}",
-        store.cache.get("user:1"), store.db.get("user:1"));
+    println!(
+        "    consistent: cache={:?} == db={:?}",
+        store.cache.get("user:1"),
+        store.db.get("user:1")
+    );
 
     // Update
     wt.set("user:1", r#"{"name":"Alicia"}"#);
@@ -100,7 +105,10 @@ pub fn demo() {
 
     // Cache eviction → self-healing read from DB
     store.cache.del("user:2");
-    println!("    DEL cache user:2 → read heals from DB: {:?}", wt.get("user:2"));
+    println!(
+        "    DEL cache user:2 → read heals from DB: {:?}",
+        wt.get("user:2")
+    );
 
     // ── Show the race condition WITHOUT distributed lock ──
 
@@ -127,9 +135,13 @@ pub fn demo() {
             }
         }));
     }
-    for h in handles { h.join().unwrap(); }
-    println!("      Mismatches: {} (non-deterministic, often > 0)",
-        mismatches_naive.load(Ordering::Relaxed));
+    for h in handles {
+        h.join().unwrap();
+    }
+    println!(
+        "      Mismatches: {} (non-deterministic, often > 0)",
+        mismatches_naive.load(Ordering::Relaxed)
+    );
 
     // ── Same test WITH SETNX distributed lock ──
 
@@ -155,7 +167,11 @@ pub fn demo() {
             }
         }));
     }
-    for h in handles { h.join().unwrap(); }
-    println!("      Mismatches: {} (always 0)\n",
-        mismatches_locked.load(Ordering::Relaxed));
+    for h in handles {
+        h.join().unwrap();
+    }
+    println!(
+        "      Mismatches: {} (always 0)\n",
+        mismatches_locked.load(Ordering::Relaxed)
+    );
 }

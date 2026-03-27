@@ -14,9 +14,9 @@ pub struct Adam {
     beta1: f32,
     beta2: f32,
     eps: f32,
-    m: Vec<f32>,  // first moment
-    v: Vec<f32>,  // second moment
-    t: usize,     // step count
+    m: Vec<f32>, // first moment
+    v: Vec<f32>, // second moment
+    t: usize,    // step count
 }
 
 impl Adam {
@@ -56,7 +56,13 @@ impl Adam {
 // Linear warmup for first N steps, then cosine decay to min_lr.
 //   warmup: lr = base_lr * (step / warmup_steps)
 //   decay:  lr = min_lr + 0.5 * (base_lr - min_lr) * (1 + cos(π * progress))
-pub fn cosine_lr_schedule(step: usize, total_steps: usize, warmup_steps: usize, base_lr: f32, min_lr: f32) -> f32 {
+pub fn cosine_lr_schedule(
+    step: usize,
+    total_steps: usize,
+    warmup_steps: usize,
+    base_lr: f32,
+    min_lr: f32,
+) -> f32 {
     if step < warmup_steps {
         // Linear warmup
         base_lr * (step as f32 / warmup_steps as f32)
@@ -84,7 +90,10 @@ pub fn demo() {
     for step in 0..5 {
         adam.step(&mut params, &grads);
     }
-    println!("    After 5 steps:  [{:.4}, {:.4}, {:.4}]", params[0], params[1], params[2]);
+    println!(
+        "    After 5 steps:  [{:.4}, {:.4}, {:.4}]",
+        params[0], params[1], params[2]
+    );
 
     // Cosine LR schedule
     println!("\n    Cosine LR schedule (100 steps, 10 warmup, base=0.001, min=0.0001):");

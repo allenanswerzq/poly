@@ -1,6 +1,6 @@
-use crate::tensor::Tensor;
-use crate::fundamentals::{Linear, SwiGLUMLP, rms_norm, dropout};
 use crate::attention::MultiHeadAttention;
+use crate::fundamentals::{rms_norm, Linear, SwiGLUMLP};
+use crate::tensor::Tensor;
 
 // =============================================================================
 // Architecture & Adaptation
@@ -66,10 +66,10 @@ fn apply_rms_norm_tensor(x: &Tensor, weight: &[f32]) -> Tensor {
 // Example: W is 4096×4096 = 16M params
 //   LoRA rank=16: A is 16×4096 + B is 4096×16 = 131K params (0.8%!)
 pub struct LoRALinear {
-    frozen_weight: Tensor,  // (out, in) — not updated
-    lora_a: Tensor,         // (rank, in) — trained
-    lora_b: Tensor,         // (out, rank) — trained
-    scaling: f32,           // alpha / rank
+    frozen_weight: Tensor, // (out, in) — not updated
+    lora_a: Tensor,        // (rank, in) — trained
+    lora_b: Tensor,        // (out, rank) — trained
+    scaling: f32,          // alpha / rank
 }
 
 impl LoRALinear {
@@ -87,7 +87,7 @@ impl LoRALinear {
         let frozen_out = x.matmul(&self.frozen_weight.t());
 
         // LoRA path: x @ A^T @ B^T * scaling
-        let lora_hidden = x.matmul(&self.lora_a.t());  // (batch, rank)
+        let lora_hidden = x.matmul(&self.lora_a.t()); // (batch, rank)
         let lora_out = lora_hidden.matmul(&self.lora_b.t()).scale(self.scaling); // (batch, out)
 
         frozen_out.add(&lora_out)
@@ -105,15 +105,17 @@ impl LoRALinear {
 // A router picks the top-K experts for each token.
 // Only K/N of the compute is used per token → more total params, same compute.
 pub struct MixtureOfExperts {
-    router: Linear,          // (d_model, num_experts) — logits for each expert
-    experts: Vec<Linear>,    // N expert MLPs (simplified as linear layers)
+    router: Linear,       // (d_model, num_experts) — logits for each expert
+    experts: Vec<Linear>, // N expert MLPs (simplified as linear layers)
     num_experts: usize,
     top_k: usize,
 }
 
 impl MixtureOfExperts {
     pub fn new(d_model: usize, num_experts: usize, top_k: usize) -> Self {
-        let experts = (0..num_experts).map(|_| Linear::new(d_model, d_model)).collect();
+        let experts = (0..num_experts)
+            .map(|_| Linear::new(d_model, d_model))
+            .collect();
         Self {
             router: Linear::new(d_model, num_experts),
             experts,
@@ -132,7 +134,10 @@ impl MixtureOfExperts {
 
             // Softmax over experts
             let logits_slice = &router_logits.data;
-            let max = logits_slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let max = logits_slice
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max);
             let exps: Vec<f32> = logits_slice.iter().map(|&v| (v - max).exp()).collect();
             let sum: f32 = exps.iter().sum();
             let probs: Vec<f32> = exps.iter().map(|e| e / sum).collect();
@@ -170,19 +175,31 @@ pub fn demo() {
     let block = GPT2Block::new(16, 2);
     let x = Tensor::rand(4, 16); // (seq_len=4, d_model=16)
     let out = block.forward(&x);
-    println!("    GPT2Block(d=16, heads=2): {} → {}", x.preview(), out.preview());
+    println!(
+        "    GPT2Block(d=16, heads=2): {} → {}",
+        x.preview(),
+        out.preview()
+    );
 
     // LoRA
     let lora = LoRALinear::new(64, 64, 4, 1.0);
     let x = Tensor::rand(2, 64);
     let out = lora.forward(&x);
     let (frozen, trainable) = lora.param_count();
-    println!("    LoRA(64→64, rank=4): frozen={}, trainable={} ({:.1}%)",
-        frozen, trainable, trainable as f32 / frozen as f32 * 100.0);
+    println!(
+        "    LoRA(64→64, rank=4): frozen={}, trainable={} ({:.1}%)",
+        frozen,
+        trainable,
+        trainable as f32 / frozen as f32 * 100.0
+    );
 
     // MoE
     let moe = MixtureOfExperts::new(8, 4, 2); // 4 experts, top-2
     let x = Tensor::rand(3, 8);
     let out = moe.forward(&x);
-    println!("    MoE(4 experts, top-2): {} → {}\n", x.preview(), out.preview());
+    println!(
+        "    MoE(4 experts, top-2): {} → {}\n",
+        x.preview(),
+        out.preview()
+    );
 }

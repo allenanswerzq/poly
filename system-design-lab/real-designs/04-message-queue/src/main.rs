@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Message Queue Implementation
 //!
 //! A simplified Kafka-like message queue demonstrating:
@@ -240,7 +241,12 @@ impl Producer {
     }
 
     /// Send with explicit partition
-    pub fn send_to_partition(&self, topic: &str, partition_id: usize, message: Message) -> Option<RecordMetadata> {
+    pub fn send_to_partition(
+        &self,
+        topic: &str,
+        partition_id: usize,
+        message: Message,
+    ) -> Option<RecordMetadata> {
         let topic_ref = self.broker.get_topic(topic)?;
         let partition = topic_ref.get_partition_by_id(partition_id)?;
         let offset = partition.append(message.clone());
@@ -295,9 +301,7 @@ impl ConsumerGroup {
     /// Simple round-robin partition assignment
     pub fn assign_partitions(&self, consumer_id: &str, topic: &str, partitions: Vec<usize>) {
         let mut assignments = self.assignments.lock();
-        let consumer_assignments = assignments
-            .entry(consumer_id.to_string())
-            .or_default();
+        let consumer_assignments = assignments.entry(consumer_id.to_string()).or_default();
 
         for partition in partitions {
             consumer_assignments.push((topic.to_string(), partition));
@@ -318,7 +322,7 @@ pub struct Consumer {
     id: String,
     broker: Arc<Broker>,
     group: Arc<ConsumerGroup>,
-    subscriptions: Mutex<Vec<(String, usize)>>,  // (topic, partition)
+    subscriptions: Mutex<Vec<(String, usize)>>, // (topic, partition)
 }
 
 impl Consumer {
@@ -370,7 +374,8 @@ impl Consumer {
     pub fn commit(&self, records: &[ConsumerRecord]) {
         for record in records {
             // Commit offset + 1 (next message to read)
-            self.group.commit_offset(&record.topic, record.partition, record.offset + 1);
+            self.group
+                .commit_offset(&record.topic, record.partition, record.offset + 1);
         }
     }
 
@@ -408,11 +413,31 @@ fn main() {
     // Send messages with keys (for partitioning)
     println!("\n  ═══ Producing Messages ═══");
     let orders = vec![
-        ("order-1", "customer-a", r#"{"item": "laptop", "price": 999}"#),
-        ("order-2", "customer-b", r#"{"item": "phone", "price": 599}"#),
-        ("order-3", "customer-a", r#"{"item": "tablet", "price": 399}"#),
-        ("order-4", "customer-c", r#"{"item": "watch", "price": 299}"#),
-        ("order-5", "customer-b", r#"{"item": "earbuds", "price": 149}"#),
+        (
+            "order-1",
+            "customer-a",
+            r#"{"item": "laptop", "price": 999}"#,
+        ),
+        (
+            "order-2",
+            "customer-b",
+            r#"{"item": "phone", "price": 599}"#,
+        ),
+        (
+            "order-3",
+            "customer-a",
+            r#"{"item": "tablet", "price": 399}"#,
+        ),
+        (
+            "order-4",
+            "customer-c",
+            r#"{"item": "watch", "price": 299}"#,
+        ),
+        (
+            "order-5",
+            "customer-b",
+            r#"{"item": "earbuds", "price": 149}"#,
+        ),
     ];
 
     for (order_id, customer, payload) in &orders {
@@ -421,8 +446,10 @@ fn main() {
             .with_header("order_id", order_id);
 
         let metadata = producer.send("orders", msg).unwrap();
-        println!("  Sent {} -> partition {}, offset {}",
-                 order_id, metadata.partition, metadata.offset);
+        println!(
+            "  Sent {} -> partition {}, offset {}",
+            order_id, metadata.partition, metadata.offset
+        );
     }
 
     // Same customer's orders should go to same partition
@@ -440,7 +467,10 @@ fn main() {
     consumer1.subscribe("orders", vec![0, 1]);
     consumer2.subscribe("orders", vec![2]);
 
-    println!("Consumer {} assigned partitions [0, 1]", &consumer1.id()[..8]);
+    println!(
+        "Consumer {} assigned partitions [0, 1]",
+        &consumer1.id()[..8]
+    );
     println!("Consumer {} assigned partition [2]", &consumer2.id()[..8]);
 
     // Poll and process messages
@@ -450,9 +480,10 @@ fn main() {
     let records1 = consumer1.poll(10);
     for record in &records1 {
         let payload = String::from_utf8_lossy(&record.message.value);
-        println!("  [P{}:O{}] key={:?}, value={}",
-                 record.partition, record.offset,
-                 record.message.key, payload);
+        println!(
+            "  [P{}:O{}] key={:?}, value={}",
+            record.partition, record.offset, record.message.key, payload
+        );
     }
     // Commit after processing
     consumer1.commit(&records1);
@@ -462,9 +493,10 @@ fn main() {
     let records2 = consumer2.poll(10);
     for record in &records2 {
         let payload = String::from_utf8_lossy(&record.message.value);
-        println!("  [P{}:O{}] key={:?}, value={}",
-                 record.partition, record.offset,
-                 record.message.key, payload);
+        println!(
+            "  [P{}:O{}] key={:?}, value={}",
+            record.partition, record.offset, record.message.key, payload
+        );
     }
     consumer2.commit(&records2);
     println!("  Committed {} records", records2.len());
@@ -480,8 +512,10 @@ fn main() {
     println!("\n--- Producing More Messages ---");
     let msg = Message::new(b"new order".to_vec()).with_key("customer-a");
     let metadata = producer.send("orders", msg).unwrap();
-    println!("Sent new order -> partition {}, offset {}",
-             metadata.partition, metadata.offset);
+    println!(
+        "Sent new order -> partition {}, offset {}",
+        metadata.partition, metadata.offset
+    );
 
     // Poll again - should get new message
     println!("\n--- Polling After New Message ---");

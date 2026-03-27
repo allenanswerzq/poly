@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Live Comments (FB Live Comments) - Mini Implementation
 //!
 //! Demonstrates:
@@ -116,12 +117,37 @@ impl SentimentAnalyzer {
     fn new() -> Self {
         Self {
             positive_words: vec![
-                "love", "great", "awesome", "amazing", "best", "good", "nice",
-                "❤️", "😊", "👍", "🔥", "💯", "wow", "incredible", "perfect",
+                "love",
+                "great",
+                "awesome",
+                "amazing",
+                "best",
+                "good",
+                "nice",
+                "❤️",
+                "😊",
+                "👍",
+                "🔥",
+                "💯",
+                "wow",
+                "incredible",
+                "perfect",
             ],
             negative_words: vec![
-                "hate", "bad", "worst", "terrible", "awful", "boring", "sucks",
-                "😡", "👎", "💔", "😢", "ugh", "disappointed", "stupid",
+                "hate",
+                "bad",
+                "worst",
+                "terrible",
+                "awful",
+                "boring",
+                "sucks",
+                "😡",
+                "👎",
+                "💔",
+                "😢",
+                "ugh",
+                "disappointed",
+                "stupid",
             ],
         }
     }
@@ -310,7 +336,10 @@ impl LiveStream {
         let sentiment = self.sentiment_analyzer.analyze(content);
 
         let comment = Comment {
-            id: format!("cmt_{}", self.comment_counter.fetch_add(1, Ordering::SeqCst)),
+            id: format!(
+                "cmt_{}",
+                self.comment_counter.fetch_add(1, Ordering::SeqCst)
+            ),
             stream_id: self.id.clone(),
             user_id: user_id.to_string(),
             content: content.to_string(),
@@ -380,7 +409,8 @@ impl LiveCommentsService {
 
     fn create_stream(&self, stream_id: &str) -> Arc<LiveStream> {
         let stream = Arc::new(LiveStream::new(stream_id));
-        self.streams.insert(stream_id.to_string(), Arc::clone(&stream));
+        self.streams
+            .insert(stream_id.to_string(), Arc::clone(&stream));
         stream
     }
 
@@ -477,7 +507,10 @@ fn main() {
     println!("High volume stream:");
     println!("  Total: {} comments", high_stats.total_comments);
     println!("  Rate: {:.1} comments/sec", high_stats.comments_per_second);
-    println!("  Sampled: {} comments", high_volume_stream.get_sampled().len());
+    println!(
+        "  Sampled: {} comments",
+        high_volume_stream.get_sampled().len()
+    );
 
     println!("\n=== Key Concepts ===");
     println!("1. Real-time: Broadcast comments to all subscribers");
@@ -503,8 +536,14 @@ mod tests {
     fn test_sentiment_analysis() {
         let analyzer = SentimentAnalyzer::new();
 
-        assert!(matches!(analyzer.analyze("I love this!"), Sentiment::Positive));
-        assert!(matches!(analyzer.analyze("This is terrible"), Sentiment::Negative));
+        assert!(matches!(
+            analyzer.analyze("I love this!"),
+            Sentiment::Positive
+        ));
+        assert!(matches!(
+            analyzer.analyze("This is terrible"),
+            Sentiment::Negative
+        ));
         assert!(matches!(analyzer.analyze("Hello"), Sentiment::Neutral));
     }
 

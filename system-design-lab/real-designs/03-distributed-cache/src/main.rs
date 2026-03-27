@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Distributed Cache Implementation
 //!
 //! Demonstrates a sharded distributed cache with:
@@ -331,7 +332,8 @@ impl CacheClient {
         println!("  [Cache MISS] {} - querying DB", key);
         if let Some(value) = self.db.get(key) {
             // Store in cache
-            self.cache.set(key, value.as_bytes().to_vec(), Some(self.ttl));
+            self.cache
+                .set(key, value.as_bytes().to_vec(), Some(self.ttl));
             Some(value)
         } else {
             None
@@ -343,7 +345,8 @@ impl CacheClient {
         // Write to database first
         self.db.set(key, value);
         // Then update cache
-        self.cache.set(key, value.as_bytes().to_vec(), Some(self.ttl));
+        self.cache
+            .set(key, value.as_bytes().to_vec(), Some(self.ttl));
     }
 
     /// Delete with cache invalidation
@@ -383,8 +386,18 @@ fn main() {
     cache.set("user:1", b"Alice".to_vec(), None);
     cache.set("user:2", b"Bob".to_vec(), None);
 
-    println!("GET user:1 = {:?}", cache.get("user:1").map(|b| String::from_utf8_lossy(&b).to_string()));
-    println!("GET user:2 = {:?}", cache.get("user:2").map(|b| String::from_utf8_lossy(&b).to_string()));
+    println!(
+        "GET user:1 = {:?}",
+        cache
+            .get("user:1")
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+    );
+    println!(
+        "GET user:2 = {:?}",
+        cache
+            .get("user:2")
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+    );
     println!("GET user:3 = {:?}", cache.get("user:3"));
 
     // Demonstrate fault tolerance
@@ -393,8 +406,12 @@ fn main() {
     cache.remove_node("cache-node-1");
 
     // Data should still be available from replica
-    println!("GET user:1 (should work from replica) = {:?}",
-             cache.get("user:1").map(|b| String::from_utf8_lossy(&b).to_string()));
+    println!(
+        "GET user:1 (should work from replica) = {:?}",
+        cache
+            .get("user:1")
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+    );
 
     // Show cluster stats
     println!("\n--- Cluster Stats ---");
@@ -435,10 +452,16 @@ fn main() {
 
     cache3.set("temp", b"data".to_vec(), Some(Duration::from_millis(100)));
     println!("Set 'temp' with 100ms TTL");
-    println!("GET temp (immediately) = {:?}", cache3.get("temp").is_some());
+    println!(
+        "GET temp (immediately) = {:?}",
+        cache3.get("temp").is_some()
+    );
 
     std::thread::sleep(Duration::from_millis(150));
-    println!("GET temp (after 150ms) = {:?}", cache3.get("temp").is_some());
+    println!(
+        "GET temp (after 150ms) = {:?}",
+        cache3.get("temp").is_some()
+    );
 
     println!("\n=== Demo Complete ===");
 }

@@ -10,7 +10,11 @@ pub struct Tensor {
 
 impl Tensor {
     pub fn zeros(rows: usize, cols: usize) -> Self {
-        Self { data: vec![0.0; rows * cols], rows, cols }
+        Self {
+            data: vec![0.0; rows * cols],
+            rows,
+            cols,
+        }
     }
 
     pub fn from_vec(data: Vec<f32>, rows: usize, cols: usize) -> Self {
@@ -29,11 +33,13 @@ impl Tensor {
         use rand::Rng;
         let mut rng = rand::thread_rng();
         // Box-Muller transform for normal distribution
-        let data: Vec<f32> = (0..rows * cols).map(|_| {
-            let u1: f32 = rng.gen_range(0.001..1.0);
-            let u2: f32 = rng.gen_range(0.0..std::f32::consts::TAU);
-            (-2.0 * u1.ln()).sqrt() * u2.cos() * std
-        }).collect();
+        let data: Vec<f32> = (0..rows * cols)
+            .map(|_| {
+                let u1: f32 = rng.gen_range(0.001..1.0);
+                let u2: f32 = rng.gen_range(0.0..std::f32::consts::TAU);
+                (-2.0 * u1.ln()).sqrt() * u2.cos() * std
+            })
+            .collect();
         Self { data, rows, cols }
     }
 
@@ -77,8 +83,17 @@ impl Tensor {
     /// Element-wise add
     pub fn add(&self, other: &Tensor) -> Tensor {
         assert_eq!(self.data.len(), other.data.len());
-        let data: Vec<f32> = self.data.iter().zip(&other.data).map(|(a, b)| a + b).collect();
-        Tensor { data, rows: self.rows, cols: self.cols }
+        let data: Vec<f32> = self
+            .data
+            .iter()
+            .zip(&other.data)
+            .map(|(a, b)| a + b)
+            .collect();
+        Tensor {
+            data,
+            rows: self.rows,
+            cols: self.cols,
+        }
     }
 
     /// Add bias (broadcast row vector across all rows)
@@ -95,14 +110,27 @@ impl Tensor {
 
     /// Element-wise multiply
     pub fn mul(&self, other: &Tensor) -> Tensor {
-        let data: Vec<f32> = self.data.iter().zip(&other.data).map(|(a, b)| a * b).collect();
-        Tensor { data, rows: self.rows, cols: self.cols }
+        let data: Vec<f32> = self
+            .data
+            .iter()
+            .zip(&other.data)
+            .map(|(a, b)| a * b)
+            .collect();
+        Tensor {
+            data,
+            rows: self.rows,
+            cols: self.cols,
+        }
     }
 
     /// Scalar multiply
     pub fn scale(&self, s: f32) -> Tensor {
         let data: Vec<f32> = self.data.iter().map(|x| x * s).collect();
-        Tensor { data, rows: self.rows, cols: self.cols }
+        Tensor {
+            data,
+            rows: self.rows,
+            cols: self.cols,
+        }
     }
 
     /// Get a row as a slice
@@ -112,8 +140,19 @@ impl Tensor {
 
     /// Print first few values
     pub fn preview(&self) -> String {
-        let vals: Vec<String> = self.data.iter().take(6).map(|v| format!("{:.3}", v)).collect();
+        let vals: Vec<String> = self
+            .data
+            .iter()
+            .take(6)
+            .map(|v| format!("{:.3}", v))
+            .collect();
         let suffix = if self.data.len() > 6 { ", ..." } else { "" };
-        format!("Tensor({}×{}) [{}{}]", self.rows, self.cols, vals.join(", "), suffix)
+        format!(
+            "Tensor({}×{}) [{}{}]",
+            self.rows,
+            self.cols,
+            vals.join(", "),
+            suffix
+        )
     }
 }

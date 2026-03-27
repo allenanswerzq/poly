@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # Handling Contention Pattern Demos
 //!
 //! This module demonstrates patterns for handling concurrent access to shared resources:
@@ -8,13 +9,13 @@
 //! 5. Hot Key Mitigation
 
 use dashmap::DashMap;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use rand::Rng;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // =============================================================================
 // Pattern 1: Optimistic Locking
@@ -73,7 +74,12 @@ impl OptimisticStore {
     }
 
     /// Update with automatic retry
-    fn update_with_retry<F>(&self, key: &str, max_retries: usize, transform: F) -> Result<u64, &'static str>
+    fn update_with_retry<F>(
+        &self,
+        key: &str,
+        max_retries: usize,
+        transform: F,
+    ) -> Result<u64, &'static str>
     where
         F: Fn(&str) -> String,
     {
@@ -186,12 +192,7 @@ impl AtomicCounter {
             }
 
             // Atomic compare-and-swap
-            match entry.compare_exchange(
-                current,
-                current - 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
+            match entry.compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst) {
                 Ok(_) => return Ok(current - 1),
                 Err(_) => continue, // Value changed, retry
             }
@@ -243,27 +244,21 @@ impl SerializedProcessor {
             return;
         }
 
-        let value_entry = self
-            .values
-            .entry(key.to_string())
-            .or_insert(Mutex::new(0));
+        let value_entry = self.values.entry(key.to_string()).or_insert(Mutex::new(0));
         let mut value = value_entry.lock();
 
         // Process all queued operations
         if let Some(queue_ref) = self.queues.get(key) {
             let mut queue = queue_ref.lock();
             while let Some(op) = queue.pop_front() {
-                op(&mut *value);
+                op(&mut value);
                 self.processed.fetch_add(1, Ordering::SeqCst);
             }
         }
     }
 
     fn get(&self, key: &str) -> i64 {
-        self.values
-            .get(key)
-            .map(|v| *v.lock())
-            .unwrap_or(0)
+        self.values.get(key).map(|v| *v.lock()).unwrap_or(0)
     }
 }
 
@@ -318,7 +313,9 @@ fn main() {
     let store = Arc::new(OptimisticStore::new());
 
     // Initialize
-    store.compare_and_update("balance", 0, "100".to_string()).unwrap();
+    store
+        .compare_and_update("balance", 0, "100".to_string())
+        .unwrap();
 
     // Simulate concurrent updates
     let handles: Vec<_> = (0..10)
@@ -431,7 +428,9 @@ fn main() {
 
     // High contention scenario
     let store_high = Arc::new(OptimisticStore::new());
-    store_high.compare_and_update("hot", 0, "0".to_string()).unwrap();
+    store_high
+        .compare_and_update("hot", 0, "0".to_string())
+        .unwrap();
 
     let handles: Vec<_> = (0..50)
         .map(|_| {
@@ -453,7 +452,11 @@ fn main() {
 
     let (s, c) = store_high.stats();
     println!("High contention (50 threads, 1 key):");
-    println!("  Conflicts: {}, Conflict rate: {:.1}%", c, c as f64 / (s + c) as f64 * 100.0);
+    println!(
+        "  Conflicts: {}, Conflict rate: {:.1}%",
+        c,
+        c as f64 / (s + c) as f64 * 100.0
+    );
 
     println!("\n=== Key Takeaways ===");
     println!("1. Optimistic: Retry on conflict (good for low contention)");
@@ -475,7 +478,9 @@ mod tests {
         assert!(store.compare_and_update("key", 0, "v1".to_string()).is_ok());
 
         // Conflict on wrong version
-        assert!(store.compare_and_update("key", 0, "v2".to_string()).is_err());
+        assert!(store
+            .compare_and_update("key", 0, "v2".to_string())
+            .is_err());
 
         // Success with correct version
         assert!(store.compare_and_update("key", 1, "v2".to_string()).is_ok());

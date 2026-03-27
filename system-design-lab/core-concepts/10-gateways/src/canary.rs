@@ -72,10 +72,7 @@ pub fn demo() {
     // ── Random weighted routing ──
     println!("    ── Random weighted: 1% canary, 99% stable ──\n");
 
-    let router = WeightedRouter::new(vec![
-        ("canary", 1),
-        ("stable", 99),
-    ]);
+    let router = WeightedRouter::new(vec![("canary", 1), ("stable", 99)]);
 
     let mut canary_count = 0;
     let mut stable_count = 0;
@@ -88,15 +85,22 @@ pub fn demo() {
         }
     }
 
-    println!("    {} requests: canary={} ({:.1}%), stable={} ({:.1}%)",
-        total, canary_count, canary_count as f64 / total as f64 * 100.0,
-        stable_count, stable_count as f64 / total as f64 * 100.0);
+    println!(
+        "    {} requests: canary={} ({:.1}%), stable={} ({:.1}%)",
+        total,
+        canary_count,
+        canary_count as f64 / total as f64 * 100.0,
+        stable_count,
+        stable_count as f64 / total as f64 * 100.0
+    );
 
     // ── Hash-based sticky routing ──
     println!("\n    ── Sticky routing: same user always hits same backend ──\n");
 
-    let users = ["user-42", "user-7", "user-99", "user-123", "user-456",
-                  "user-789", "user-0", "user-55", "user-31", "user-88"];
+    let users = [
+        "user-42", "user-7", "user-99", "user-123", "user-456", "user-789", "user-0", "user-55",
+        "user-31", "user-88",
+    ];
 
     for user in &users {
         let backend = router.pick_sticky(user);
@@ -111,27 +115,27 @@ pub fn demo() {
     let rollout_steps = [(1, 99), (10, 90), (50, 50), (100, 0)];
 
     for (canary_w, stable_w) in &rollout_steps {
-        let router = WeightedRouter::new(vec![
-            ("canary", *canary_w),
-            ("stable", *stable_w),
-        ]);
+        let router = WeightedRouter::new(vec![("canary", *canary_w), ("stable", *stable_w)]);
 
         let mut canary_hits = 0;
         for _ in 0..1000 {
-            if router.pick_random() == "canary" { canary_hits += 1; }
+            if router.pick_random() == "canary" {
+                canary_hits += 1;
+            }
         }
 
-        println!("    weight canary={:3}, stable={:3} → canary gets ~{:.0}% of traffic",
-            canary_w, stable_w, canary_hits as f64 / 10.0);
+        println!(
+            "    weight canary={:3}, stable={:3} → canary gets ~{:.0}% of traffic",
+            canary_w,
+            stable_w,
+            canary_hits as f64 / 10.0
+        );
     }
 
     // ── A/B testing (50/50 split) ──
     println!("\n    ── A/B testing: 50/50 split with sticky users ──\n");
 
-    let ab_router = WeightedRouter::new(vec![
-        ("variant-A", 50),
-        ("variant-B", 50),
-    ]);
+    let ab_router = WeightedRouter::new(vec![("variant-A", 50), ("variant-B", 50)]);
 
     let mut a_users = Vec::new();
     let mut b_users = Vec::new();
@@ -142,7 +146,15 @@ pub fn demo() {
             _ => b_users.push(user),
         }
     }
-    println!("    Variant A ({} users): {:?}", a_users.len(), &a_users[..3.min(a_users.len())]);
-    println!("    Variant B ({} users): {:?}", b_users.len(), &b_users[..3.min(b_users.len())]);
+    println!(
+        "    Variant A ({} users): {:?}",
+        a_users.len(),
+        &a_users[..3.min(a_users.len())]
+    );
+    println!(
+        "    Variant B ({} users): {:?}",
+        b_users.len(),
+        &b_users[..3.min(b_users.len())]
+    );
     println!("    Each user always sees the same variant (hash-based).\n");
 }

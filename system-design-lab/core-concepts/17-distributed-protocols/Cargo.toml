@@ -1,0 +1,11 @@
+[package]
+name = "distributed-protocols"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "distributed-protocols"
+path = "src/main.rs"
+
+[dependencies]
+rand = { workspace = true }

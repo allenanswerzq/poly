@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # Mini Redis Implementation
 //!
 //! A simplified Redis demonstrating core concepts:
@@ -7,7 +8,7 @@
 //! - Pub/Sub
 
 use dashmap::DashMap;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -101,9 +102,10 @@ impl MiniRedis {
 
     /// INCR key
     pub fn incr(&self, key: &str) -> Result<i64, &'static str> {
-        let mut entry = self.data.entry(key.to_string()).or_insert_with(|| {
-            Entry::new(RedisValue::String("0".to_string()))
-        });
+        let mut entry = self
+            .data
+            .entry(key.to_string())
+            .or_insert_with(|| Entry::new(RedisValue::String("0".to_string())));
 
         match &mut entry.value {
             RedisValue::String(s) => {
@@ -129,18 +131,18 @@ impl MiniRedis {
     /// TTL key
     pub fn ttl(&self, key: &str) -> i64 {
         match self.data.get(key) {
-            None => -2,  // Key doesn't exist
+            None => -2, // Key doesn't exist
             Some(entry) => match entry.expires_at {
-                None => -1,  // No expiration
+                None => -1, // No expiration
                 Some(exp) => {
                     let now = Instant::now();
                     if exp <= now {
-                        -2  // Expired
+                        -2 // Expired
                     } else {
                         (exp - now).as_secs() as i64
                     }
                 }
-            }
+            },
         }
     }
 
@@ -148,16 +150,21 @@ impl MiniRedis {
 
     /// HSET key field value
     pub fn hset(&self, key: &str, field: &str, value: &str) -> i64 {
-        let mut entry = self.data.entry(key.to_string()).or_insert_with(|| {
-            Entry::new(RedisValue::Hash(HashMap::new()))
-        });
+        let mut entry = self
+            .data
+            .entry(key.to_string())
+            .or_insert_with(|| Entry::new(RedisValue::Hash(HashMap::new())));
 
         if let RedisValue::Hash(ref mut hash) = entry.value {
             let is_new = !hash.contains_key(field);
             hash.insert(field.to_string(), value.to_string());
-            if is_new { 1 } else { 0 }
+            if is_new {
+                1
+            } else {
+                0
+            }
         } else {
-            0  // Wrong type
+            0 // Wrong type
         }
     }
 
@@ -174,22 +181,26 @@ impl MiniRedis {
 
     /// HGETALL key
     pub fn hgetall(&self, key: &str) -> Vec<(String, String)> {
-        self.data.get(key).map(|entry| {
-            if let RedisValue::Hash(hash) = &entry.value {
-                hash.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-            } else {
-                vec![]
-            }
-        }).unwrap_or_default()
+        self.data
+            .get(key)
+            .map(|entry| {
+                if let RedisValue::Hash(hash) = &entry.value {
+                    hash.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                } else {
+                    vec![]
+                }
+            })
+            .unwrap_or_default()
     }
 
     // ===== List Commands =====
 
     /// LPUSH key value
     pub fn lpush(&self, key: &str, value: &str) -> usize {
-        let mut entry = self.data.entry(key.to_string()).or_insert_with(|| {
-            Entry::new(RedisValue::List(VecDeque::new()))
-        });
+        let mut entry = self
+            .data
+            .entry(key.to_string())
+            .or_insert_with(|| Entry::new(RedisValue::List(VecDeque::new())));
 
         if let RedisValue::List(ref mut list) = entry.value {
             list.push_front(value.to_string());
@@ -201,9 +212,10 @@ impl MiniRedis {
 
     /// RPUSH key value
     pub fn rpush(&self, key: &str, value: &str) -> usize {
-        let mut entry = self.data.entry(key.to_string()).or_insert_with(|| {
-            Entry::new(RedisValue::List(VecDeque::new()))
-        });
+        let mut entry = self
+            .data
+            .entry(key.to_string())
+            .or_insert_with(|| Entry::new(RedisValue::List(VecDeque::new())));
 
         if let RedisValue::List(ref mut list) = entry.value {
             list.push_back(value.to_string());
@@ -237,33 +249,45 @@ impl MiniRedis {
 
     /// LRANGE key start stop
     pub fn lrange(&self, key: &str, start: i64, stop: i64) -> Vec<String> {
-        self.data.get(key).map(|entry| {
-            if let RedisValue::List(list) = &entry.value {
-                let len = list.len() as i64;
-                let start = if start < 0 { (len + start).max(0) } else { start } as usize;
-                let stop = if stop < 0 { (len + stop).max(0) } else { stop } as usize;
+        self.data
+            .get(key)
+            .map(|entry| {
+                if let RedisValue::List(list) = &entry.value {
+                    let len = list.len() as i64;
+                    let start = if start < 0 {
+                        (len + start).max(0)
+                    } else {
+                        start
+                    } as usize;
+                    let stop = if stop < 0 { (len + stop).max(0) } else { stop } as usize;
 
-                list.iter()
-                    .skip(start)
-                    .take(stop - start + 1)
-                    .cloned()
-                    .collect()
-            } else {
-                vec![]
-            }
-        }).unwrap_or_default()
+                    list.iter()
+                        .skip(start)
+                        .take(stop - start + 1)
+                        .cloned()
+                        .collect()
+                } else {
+                    vec![]
+                }
+            })
+            .unwrap_or_default()
     }
 
     // ===== Set Commands =====
 
     /// SADD key member
     pub fn sadd(&self, key: &str, member: &str) -> i64 {
-        let mut entry = self.data.entry(key.to_string()).or_insert_with(|| {
-            Entry::new(RedisValue::Set(std::collections::HashSet::new()))
-        });
+        let mut entry = self
+            .data
+            .entry(key.to_string())
+            .or_insert_with(|| Entry::new(RedisValue::Set(std::collections::HashSet::new())));
 
         if let RedisValue::Set(ref mut set) = entry.value {
-            if set.insert(member.to_string()) { 1 } else { 0 }
+            if set.insert(member.to_string()) {
+                1
+            } else {
+                0
+            }
         } else {
             0
         }
@@ -271,13 +295,16 @@ impl MiniRedis {
 
     /// SMEMBERS key
     pub fn smembers(&self, key: &str) -> Vec<String> {
-        self.data.get(key).map(|entry| {
-            if let RedisValue::Set(set) = &entry.value {
-                set.iter().cloned().collect()
-            } else {
-                vec![]
-            }
-        }).unwrap_or_default()
+        self.data
+            .get(key)
+            .map(|entry| {
+                if let RedisValue::Set(set) = &entry.value {
+                    set.iter().cloned().collect()
+                } else {
+                    vec![]
+                }
+            })
+            .unwrap_or_default()
     }
 
     // ===== Pub/Sub =====
@@ -294,13 +321,14 @@ impl MiniRedis {
 
     pub fn keys(&self, pattern: &str) -> Vec<String> {
         // Simple pattern matching (only supports * wildcard at end)
-        self.data.iter()
+        self.data
+            .iter()
             .filter(|entry| !entry.is_expired())
             .filter(|entry| {
                 if pattern == "*" {
                     true
                 } else if pattern.ends_with('*') {
-                    entry.key().starts_with(&pattern[..pattern.len()-1])
+                    entry.key().starts_with(&pattern[..pattern.len() - 1])
                 } else {
                     entry.key() == pattern
                 }
@@ -339,6 +367,12 @@ pub struct Receiver {
 impl Receiver {
     pub fn recv(&self) -> Option<String> {
         self.queue.lock().pop_front()
+    }
+}
+
+impl Default for PubSub {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

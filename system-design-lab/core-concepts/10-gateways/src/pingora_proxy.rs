@@ -1,7 +1,7 @@
+use pingora::lb::{selection::RoundRobin, LoadBalancer};
 use pingora::prelude::*;
 use pingora::proxy::{ProxyHttp, Session};
 use pingora::upstreams::peer::HttpPeer;
-use pingora::lb::{selection::RoundRobin, LoadBalancer};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::thread;
@@ -36,8 +36,7 @@ pub fn demo_pingora_proxy() {
                 None
             };
 
-            let upstream =
-                upstream.ok_or_else(|| pingora::Error::new_str("no route matched"))?;
+            let upstream = upstream.ok_or_else(|| pingora::Error::new_str("no route matched"))?;
 
             let peer = HttpPeer::new(upstream, false, String::new());
             Ok(Box::new(peer))
@@ -91,8 +90,11 @@ pub fn demo_pingora_proxy() {
         Ok(resp) => {
             let status = resp.status();
             let body: Value = resp.json().unwrap_or_default();
-            println!("    GET /api/users/1   → {} service={:?}",
-                status, body.get("service").unwrap_or(&json!("?")));
+            println!(
+                "    GET /api/users/1   → {} service={:?}",
+                status,
+                body.get("service").unwrap_or(&json!("?"))
+            );
         }
         Err(e) => println!("    GET /api/users/1   → ERROR: {}", e),
     }
@@ -101,8 +103,11 @@ pub fn demo_pingora_proxy() {
         Ok(resp) => {
             let status = resp.status();
             let body: Value = resp.json().unwrap_or_default();
-            println!("    GET /api/orders/42  → {} service={:?}",
-                status, body.get("service").unwrap_or(&json!("?")));
+            println!(
+                "    GET /api/orders/42  → {} service={:?}",
+                status,
+                body.get("service").unwrap_or(&json!("?"))
+            );
         }
         Err(e) => println!("    GET /api/orders/42  → ERROR: {}", e),
     }

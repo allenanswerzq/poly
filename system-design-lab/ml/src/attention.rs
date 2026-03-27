@@ -37,7 +37,12 @@ use crate::tensor::Tensor;
 //     Token i attends to token j with weight w_ij → pulls in v_j proportionally.
 //
 //     output_i = Σ_j w_ij · v_j    (weighted average of values)
-pub fn scaled_dot_product_attention(q: &Tensor, k: &Tensor, v: &Tensor, mask: Option<&Tensor>) -> Tensor {
+pub fn scaled_dot_product_attention(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    mask: Option<&Tensor>,
+) -> Tensor {
     let d_k = q.cols as f32;
     let scale = 1.0 / d_k.sqrt();
 
@@ -165,7 +170,11 @@ impl MultiHeadAttention {
 
         // For simplicity, we process heads sequentially and concat
         // In real code, this is reshaped + batched matmul
-        let mask = if causal { Some(causal_mask(seq_len)) } else { None };
+        let mask = if causal {
+            Some(causal_mask(seq_len))
+        } else {
+            None
+        };
         let mut all_heads = Vec::new();
 
         for h in 0..self.num_heads {
@@ -208,13 +217,21 @@ impl MultiHeadAttention {
 //   Memory savings: KV cache is 4x smaller with GQA(32q,8kv) vs MHA(32q,32kv)
 //   Quality: barely any degradation vs full MHA (validated by LLaMA 2 paper)
 pub fn grouped_query_attention(
-    q: &Tensor, k: &Tensor, v: &Tensor,
-    num_q_heads: usize, num_kv_heads: usize,
-    d_head: usize, causal: bool,
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    num_q_heads: usize,
+    num_kv_heads: usize,
+    d_head: usize,
+    causal: bool,
 ) -> Tensor {
     let seq_len = q.rows;
     let group_size = num_q_heads / num_kv_heads; // e.g., 32/8 = 4 Q heads per KV head
-    let mask = if causal { Some(causal_mask(seq_len)) } else { None };
+    let mask = if causal {
+        Some(causal_mask(seq_len))
+    } else {
+        None
+    };
 
     let mut all_heads = Vec::new();
 
@@ -238,7 +255,11 @@ pub fn grouped_query_attention(
 pub fn sliding_window_mask(seq_len: usize, window_size: usize) -> Tensor {
     let mut mask = Tensor::zeros(seq_len, seq_len);
     for i in 0..seq_len {
-        let start = if i >= window_size { i - window_size + 1 } else { 0 };
+        let start = if i >= window_size {
+            i - window_size + 1
+        } else {
+            0
+        };
         for j in start..=i {
             mask.set(i, j, 1.0);
         }
@@ -275,9 +296,11 @@ pub fn linear_attention(q: &Tensor, k: &Tensor, v: &Tensor) -> Tensor {
 }
 
 fn elu_plus_one(x: &Tensor) -> Tensor {
-    let data: Vec<f32> = x.data.iter().map(|&v| {
-        if v >= 0.0 { v + 1.0 } else { v.exp() }
-    }).collect();
+    let data: Vec<f32> = x
+        .data
+        .iter()
+        .map(|&v| if v >= 0.0 { v + 1.0 } else { v.exp() })
+        .collect();
     Tensor::from_vec(data, x.rows, x.cols)
 }
 
@@ -310,7 +333,11 @@ pub struct KVCache {
 
 impl KVCache {
     pub fn new(d_head: usize) -> Self {
-        Self { k_cache: Vec::new(), v_cache: Vec::new(), d_head }
+        Self {
+            k_cache: Vec::new(),
+            v_cache: Vec::new(),
+            d_head,
+        }
     }
 
     // Append new K,V and compute attention for the new query
@@ -323,9 +350,11 @@ impl KVCache {
         let scale = 1.0 / d_k.sqrt();
 
         // Compute scores: q @ each cached k
-        let mut scores: Vec<f32> = self.k_cache.iter().map(|ki| {
-            q.iter().zip(ki).map(|(a, b)| a * b).sum::<f32>() * scale
-        }).collect();
+        let scores: Vec<f32> = self
+            .k_cache
+            .iter()
+            .map(|ki| q.iter().zip(ki).map(|(a, b)| a * b).sum::<f32>() * scale)
+            .collect();
 
         // Softmax
         let max = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -385,7 +414,7 @@ pub fn apply_rope(x: &Tensor, start_pos: usize) -> Tensor {
 
             let x0 = x.get(pos, i);
             let x1 = x.get(pos, i + 1);
-            result.set(pos, i,     x0 * cos_a - x1 * sin_a);
+            result.set(pos, i, x0 * cos_a - x1 * sin_a);
             result.set(pos, i + 1, x0 * sin_a + x1 * cos_a);
         }
     }
@@ -424,7 +453,7 @@ pub fn flash_attention(q: &Tensor, k: &Tensor, v: &Tensor, block_size: usize) ->
     let (n, d) = (q.rows, q.cols);
     let mut output = Tensor::zeros(n, d);
     let mut row_max = vec![f32::NEG_INFINITY; n]; // running max for online softmax
-    let mut row_sum = vec![0.0_f32; n];           // running sum of exp(scores)
+    let mut row_sum = vec![0.0_f32; n]; // running sum of exp(scores)
 
     // Process K,V in blocks
     for kb in (0..n).step_by(block_size) {
@@ -433,10 +462,14 @@ pub fn flash_attention(q: &Tensor, k: &Tensor, v: &Tensor, block_size: usize) ->
         for qi in 0..n {
             // Compute scores for this Q row against this K block
             for kj in kb..k_end {
-                if kj > qi { continue; } // causal mask
+                if kj > qi {
+                    continue;
+                } // causal mask
 
                 let mut score = 0.0;
-                for dd in 0..d { score += q.get(qi, dd) * k.get(kj, dd); }
+                for dd in 0..d {
+                    score += q.get(qi, dd) * k.get(kj, dd);
+                }
                 score /= (d as f32).sqrt();
 
                 // Online softmax update
@@ -516,7 +549,11 @@ pub fn demo() {
     let k = Tensor::rand(seq_len, d_model);
     let v = Tensor::rand(seq_len, d_model);
     let out = scaled_dot_product_attention(&q, &k, &v, None);
-    println!("    ScaledDotProduct(Q,K,V): {} → {}", q.preview(), out.preview());
+    println!(
+        "    ScaledDotProduct(Q,K,V): {} → {}",
+        q.preview(),
+        out.preview()
+    );
 
     // Causal self-attention
     let out = causal_self_attention(&q, &k, &v);
@@ -559,14 +596,21 @@ pub fn demo() {
         let v = vec![1.0 + step as f32; 4];
         let out = cache.attend(&q, &k, &v);
         if step == 2 {
-            println!("    KVCache(step=2, cache_len=3): [{:.2}, {:.2}, ...]", out[0], out[1]);
+            println!(
+                "    KVCache(step=2, cache_len=3): [{:.2}, {:.2}, ...]",
+                out[0], out[1]
+            );
         }
     }
 
     // RoPE
     let x = Tensor::rand(seq_len, d_model);
     let rotated = apply_rope(&x, 0);
-    println!("    RoPE(x, pos=0): {} → {}", x.preview(), rotated.preview());
+    println!(
+        "    RoPE(x, pos=0): {} → {}",
+        x.preview(),
+        rotated.preview()
+    );
 
     // Flash Attention
     let q = Tensor::rand(seq_len, 4);
@@ -574,7 +618,15 @@ pub fn demo() {
     let v = Tensor::rand(seq_len, 4);
     let out_std = causal_self_attention(&q, &k, &v);
     let out_flash = flash_attention(&q, &k, &v, 2);
-    let diff: f32 = out_std.data.iter().zip(&out_flash.data)
-        .map(|(a, b)| (a - b).abs()).sum::<f32>() / out_std.data.len() as f32;
-    println!("    FlashAttn vs standard: avg diff = {:.6} (should be ~0)\n", diff);
+    let diff: f32 = out_std
+        .data
+        .iter()
+        .zip(&out_flash.data)
+        .map(|(a, b)| (a - b).abs())
+        .sum::<f32>()
+        / out_std.data.len() as f32;
+    println!(
+        "    FlashAttn vs standard: avg diff = {:.6} (should be ~0)\n",
+        diff
+    );
 }

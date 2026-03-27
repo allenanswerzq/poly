@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Ticket Booking System (Ticketmaster) - Mini Implementation
 //!
 //! Demonstrates:
@@ -12,11 +13,10 @@
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::time::sleep;
 
 fn default_option_instant() -> Option<Instant> {
     None
@@ -42,9 +42,9 @@ struct Event {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum SeatStatus {
     Available,
-    Held,      // Temporarily held during checkout
-    Booked,    // Purchased
-    Locked,    // Admin lock
+    Held,   // Temporarily held during checkout
+    Booked, // Purchased
+    Locked, // Admin lock
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ struct Seat {
     number: u32,
     price: u64,
     status: SeatStatus,
-    held_by: Option<String>,    // User holding the seat
+    held_by: Option<String>, // User holding the seat
     #[serde(skip, default = "default_option_instant")]
     held_until: Option<Instant>, // Expiry time for hold
 }
@@ -132,10 +132,7 @@ impl SeatInventory {
         seat_ids: &[String],
         user_id: &str,
     ) -> Result<(), &'static str> {
-        let seats_entry = self
-            .event_seats
-            .get(event_id)
-            .ok_or("Event not found")?;
+        let seats_entry = self.event_seats.get(event_id).ok_or("Event not found")?;
 
         let mut seats = seats_entry.write();
 
@@ -165,11 +162,13 @@ impl SeatInventory {
         Ok(())
     }
 
-    fn confirm_booking(&self, event_id: &str, seat_ids: &[String], user_id: &str) -> Result<(), &'static str> {
-        let seats_entry = self
-            .event_seats
-            .get(event_id)
-            .ok_or("Event not found")?;
+    fn confirm_booking(
+        &self,
+        event_id: &str,
+        seat_ids: &[String],
+        user_id: &str,
+    ) -> Result<(), &'static str> {
+        let seats_entry = self.event_seats.get(event_id).ok_or("Event not found")?;
 
         let mut seats = seats_entry.write();
 
@@ -273,7 +272,10 @@ impl BookingQueue {
     }
 
     fn enqueue(&self, event_id: &str, user_id: &str, seat_count: usize) -> String {
-        let request_id = format!("req_{}", self.request_counter.fetch_add(1, Ordering::SeqCst));
+        let request_id = format!(
+            "req_{}",
+            self.request_counter.fetch_add(1, Ordering::SeqCst)
+        );
 
         let request = BookingRequest {
             id: request_id.clone(),
@@ -333,7 +335,12 @@ impl BookingService {
         self.inventory.get_available_seats(event_id)
     }
 
-    fn start_checkout(&self, user_id: &str, event_id: &str, seat_ids: Vec<String>) -> Result<Booking, &'static str> {
+    fn start_checkout(
+        &self,
+        user_id: &str,
+        event_id: &str,
+        seat_ids: Vec<String>,
+    ) -> Result<Booking, &'static str> {
         // Try to hold seats
         self.inventory.hold_seats(event_id, &seat_ids, user_id)?;
 
@@ -372,11 +379,8 @@ impl BookingService {
         }
 
         // Confirm the booking
-        self.inventory.confirm_booking(
-            &booking.event_id,
-            &booking.seat_ids,
-            &booking.user_id,
-        )?;
+        self.inventory
+            .confirm_booking(&booking.event_id, &booking.seat_ids, &booking.user_id)?;
 
         booking.status = BookingStatus::Confirmed;
         Ok(booking.clone())
@@ -390,10 +394,12 @@ impl BookingService {
 
         if booking.status == BookingStatus::Confirmed {
             // Release booked seats back to available
-            self.inventory.release_holds(&booking.event_id, &booking.seat_ids);
+            self.inventory
+                .release_holds(&booking.event_id, &booking.seat_ids);
         } else if booking.status == BookingStatus::Pending {
             // Release held seats
-            self.inventory.release_holds(&booking.event_id, &booking.seat_ids);
+            self.inventory
+                .release_holds(&booking.event_id, &booking.seat_ids);
         }
 
         booking.status = BookingStatus::Cancelled;
@@ -424,7 +430,10 @@ impl BookingService {
                     ));
                 }
             } else {
-                processed.push(format!("{}: {} - not enough seats", request.id, request.user_id));
+                processed.push(format!(
+                    "{}: {} - not enough seats",
+                    request.id, request.user_id
+                ));
             }
         }
 
@@ -493,7 +502,9 @@ fn main() {
     );
 
     // Complete payment
-    let confirmed = service.complete_payment(&booking.id).expect("Should confirm");
+    let confirmed = service
+        .complete_payment(&booking.id)
+        .expect("Should confirm");
     println!(
         "Payment complete! Booking {} is now {:?}\n",
         confirmed.id, confirmed.status
@@ -540,7 +551,9 @@ fn main() {
 
     // Cancellation
     println!("\n--- Cancellation ---");
-    service.cancel_booking(&bob_booking.id).expect("Should cancel");
+    service
+        .cancel_booking(&bob_booking.id)
+        .expect("Should cancel");
     println!("Bob cancelled his booking");
 
     let after_cancel = service.get_available("concert_001");

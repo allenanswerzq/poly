@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Consistent Hashing Implementation
 //!
 //! This module provides a production-quality consistent hash ring with:
@@ -63,10 +64,7 @@ impl ConsistentHashRing {
         }
 
         self.nodes.insert(node.to_string(), vnode_count);
-        println!(
-            "Added node '{}' with {} virtual nodes",
-            node, vnode_count
-        );
+        println!("Added node '{}' with {} virtual nodes", node, vnode_count);
     }
 
     /// Remove a physical node (and all its virtual nodes)
@@ -176,9 +174,7 @@ fn main() {
     );
 
     // Generate sample keys
-    let sample_keys: Vec<String> = (0..10000)
-        .map(|i| format!("user:{}", i))
-        .collect();
+    let sample_keys: Vec<String> = (0..10000).map(|i| format!("user:{}", i)).collect();
 
     // Show initial distribution
     println!("\n  ═══ Key Distribution (10,000 keys) ═══");
@@ -190,7 +186,13 @@ fn main() {
 
     // Show which node handles specific keys
     println!("\n--- Sample Key Lookups ---");
-    for key in &["user:123", "user:456", "user:789", "session:abc", "order:999"] {
+    for key in &[
+        "user:123",
+        "user:456",
+        "user:789",
+        "session:abc",
+        "order:999",
+    ] {
         let node = ring.get_node(key).unwrap();
         println!("  {} -> {}", key, node);
     }
@@ -233,8 +235,8 @@ fn main() {
     // Show weighted nodes
     println!("\n--- Weighted Nodes Demo ---");
     let mut weighted_ring = ConsistentHashRing::new(100);
-    weighted_ring.add_node_with_weight("small-server", 1);   // 1x virtual nodes
-    weighted_ring.add_node_with_weight("large-server", 3);   // 3x virtual nodes
+    weighted_ring.add_node_with_weight("small-server", 1); // 1x virtual nodes
+    weighted_ring.add_node_with_weight("large-server", 3); // 3x virtual nodes
 
     let weighted_dist = weighted_ring.get_distribution(&sample_keys);
     println!("\nWeighted distribution:");
@@ -253,8 +255,8 @@ fn calculate_key_movement(
 ) -> usize {
     // This is a simplified calculation
     // In production, you'd track the exact mapping before/after
-    let theoretical_moved = keys.len() / ring.node_count();
-    theoretical_moved
+
+    keys.len() / ring.node_count()
 }
 
 #[cfg(test)]

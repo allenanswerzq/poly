@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Tinder (Matching System) - Mini Implementation
 //!
 //! Demonstrates:
@@ -10,10 +11,9 @@
 //! Run: cargo run -p tinder
 
 use dashmap::DashMap;
-use parking_lot::{Mutex, RwLock};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -188,7 +188,9 @@ impl RecommendationEngine {
         };
 
         // Get nearby users
-        let nearby = self.geo_index.find_nearby(&user.location, user.preferences.distance_km);
+        let nearby = self
+            .geo_index
+            .find_nearby(&user.location, user.preferences.distance_km);
 
         // Get already seen users
         let seen = self.seen.entry(user_id.to_string()).or_default();
@@ -280,7 +282,7 @@ struct MatchService {
     profiles: Arc<DashMap<String, UserProfile>>,
     geo_index: Arc<GeoIndex>,
     recommender: RecommendationEngine,
-    swipes: DashMap<String, Swipe>,      // "from:to" -> swipe
+    swipes: DashMap<String, Swipe>, // "from:to" -> swipe
     matches: DashMap<String, Match>,
     user_matches: DashMap<String, Vec<String>>, // user_id -> match_ids
     match_counter: AtomicU64,
@@ -292,10 +294,7 @@ impl MatchService {
         let profiles = Arc::new(DashMap::new());
         let geo_index = Arc::new(GeoIndex::new(0.1)); // ~11km cells
 
-        let recommender = RecommendationEngine::new(
-            Arc::clone(&profiles),
-            Arc::clone(&geo_index),
-        );
+        let recommender = RecommendationEngine::new(Arc::clone(&profiles), Arc::clone(&geo_index));
 
         Self {
             profiles,
@@ -310,7 +309,8 @@ impl MatchService {
     }
 
     fn register_user(&self, profile: UserProfile) {
-        self.geo_index.update_location(&profile.id, profile.location);
+        self.geo_index
+            .update_location(&profile.id, profile.location);
         self.profiles.insert(profile.id.clone(), profile);
     }
 
@@ -347,7 +347,10 @@ impl MatchService {
         if let Some(reverse_swipe) = self.swipes.get(&reverse_key) {
             if reverse_swipe.liked {
                 // It's a match!
-                let match_id = format!("match_{}", self.match_counter.fetch_add(1, Ordering::SeqCst));
+                let match_id = format!(
+                    "match_{}",
+                    self.match_counter.fetch_add(1, Ordering::SeqCst)
+                );
 
                 let new_match = Match {
                     id: match_id.clone(),
@@ -424,7 +427,10 @@ fn main() {
             age: 25,
             gender: Gender::Female,
             interested_in: vec![Gender::Male],
-            location: GeoPoint { lat: 40.7128, lon: -74.0060 }, // NYC
+            location: GeoPoint {
+                lat: 40.7128,
+                lon: -74.0060,
+            }, // NYC
             bio: "Love hiking and coffee".to_string(),
             photos: vec!["photo1.jpg".to_string(), "photo2.jpg".to_string()],
             preferences: Preferences {
@@ -439,7 +445,10 @@ fn main() {
             age: 28,
             gender: Gender::Male,
             interested_in: vec![Gender::Female],
-            location: GeoPoint { lat: 40.7200, lon: -74.0100 }, // Near NYC
+            location: GeoPoint {
+                lat: 40.7200,
+                lon: -74.0100,
+            }, // Near NYC
             bio: "Engineer by day, chef by night".to_string(),
             photos: vec!["bob1.jpg".to_string()],
             preferences: Preferences {
@@ -454,7 +463,10 @@ fn main() {
             age: 30,
             gender: Gender::Male,
             interested_in: vec![Gender::Female],
-            location: GeoPoint { lat: 40.7300, lon: -74.0200 }, // Near NYC
+            location: GeoPoint {
+                lat: 40.7300,
+                lon: -74.0200,
+            }, // Near NYC
             bio: "".to_string(),
             photos: vec![],
             preferences: Preferences {
@@ -469,7 +481,10 @@ fn main() {
             age: 26,
             gender: Gender::Female,
             interested_in: vec![Gender::Male],
-            location: GeoPoint { lat: 34.0522, lon: -118.2437 }, // LA - far away
+            location: GeoPoint {
+                lat: 34.0522,
+                lon: -118.2437,
+            }, // LA - far away
             bio: "Beach lover".to_string(),
             photos: vec!["d1.jpg".to_string()],
             preferences: Preferences {
@@ -481,7 +496,10 @@ fn main() {
     ];
 
     for user in users {
-        println!("Registered: {} ({:?}, age {})", user.name, user.gender, user.age);
+        println!(
+            "Registered: {} ({:?}, age {})",
+            user.name, user.gender, user.age
+        );
         service.register_user(user);
     }
     println!();
@@ -490,8 +508,11 @@ fn main() {
     println!("\n  ═══ Alice's Recommendations ═══");
     let recs = service.get_recommendations("alice", 5);
     for (i, profile) in recs.iter().enumerate() {
-        let distance = GeoPoint { lat: 40.7128, lon: -74.0060 }
-            .distance_km(&profile.location);
+        let distance = GeoPoint {
+            lat: 40.7128,
+            lon: -74.0060,
+        }
+        .distance_km(&profile.location);
         println!(
             "{}. {} (age {}, {:.1}km away) - \"{}\"",
             i + 1,
@@ -508,11 +529,17 @@ fn main() {
 
     // Alice likes Bob
     let result = service.swipe("alice", "bob", true);
-    println!("Alice ❤️ Bob: {:?}", result.as_ref().map(|_| "MATCH!").unwrap_or("No match yet"));
+    println!(
+        "Alice ❤️ Bob: {:?}",
+        result.as_ref().map(|_| "MATCH!").unwrap_or("No match yet")
+    );
 
     // Bob likes Alice -> MATCH!
     let result = service.swipe("bob", "alice", true);
-    println!("Bob ❤️ Alice: {:?}", result.as_ref().map(|_| "MATCH!").unwrap_or("No match yet"));
+    println!(
+        "Bob ❤️ Alice: {:?}",
+        result.as_ref().map(|_| "MATCH!").unwrap_or("No match yet")
+    );
 
     // Alice passes on Charlie
     service.swipe("alice", "charlie", false);
@@ -560,8 +587,14 @@ mod tests {
 
     #[test]
     fn test_geo_distance() {
-        let nyc = GeoPoint { lat: 40.7128, lon: -74.0060 };
-        let la = GeoPoint { lat: 34.0522, lon: -118.2437 };
+        let nyc = GeoPoint {
+            lat: 40.7128,
+            lon: -74.0060,
+        };
+        let la = GeoPoint {
+            lat: 34.0522,
+            lon: -118.2437,
+        };
 
         let distance = nyc.distance_km(&la);
         assert!(distance > 3900.0 && distance < 4000.0); // ~3944 km
@@ -580,7 +613,11 @@ mod tests {
             location: GeoPoint { lat: 0.0, lon: 0.0 },
             bio: "".to_string(),
             photos: vec![],
-            preferences: Preferences { age_min: 20, age_max: 30, distance_km: 100.0 },
+            preferences: Preferences {
+                age_min: 20,
+                age_max: 30,
+                distance_km: 100.0,
+            },
         });
 
         service.register_user(UserProfile {
@@ -592,7 +629,11 @@ mod tests {
             location: GeoPoint { lat: 0.0, lon: 0.0 },
             bio: "".to_string(),
             photos: vec![],
-            preferences: Preferences { age_min: 20, age_max: 30, distance_km: 100.0 },
+            preferences: Preferences {
+                age_min: 20,
+                age_max: 30,
+                distance_km: 100.0,
+            },
         });
 
         assert!(service.swipe("a", "b", true).is_none());

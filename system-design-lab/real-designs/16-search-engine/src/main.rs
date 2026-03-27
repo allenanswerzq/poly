@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # Search Engine (FB Post Search / Elasticsearch) - Mini Implementation
 //!
 //! Demonstrates:
@@ -126,10 +127,7 @@ impl InvertedIndex {
                 term_freq: positions.len() as u32,
             };
 
-            self.index
-                .entry(term)
-                .or_default()
-                .push(posting);
+            self.index.entry(term).or_default().push(posting);
         }
 
         // Store document
@@ -160,11 +158,7 @@ impl InvertedIndex {
 
     fn idf(&self, term: &str) -> f64 {
         let stemmed = Tokenizer::stem(term);
-        let doc_freq = self
-            .index
-            .get(&stemmed)
-            .map(|p| p.len())
-            .unwrap_or(0);
+        let doc_freq = self.index.get(&stemmed).map(|p| p.len()).unwrap_or(0);
 
         let n = self.doc_count.load(Ordering::SeqCst) as f64;
         if doc_freq == 0 {
@@ -319,12 +313,7 @@ impl QueryExecutor {
                 let score = self.scorer.score(&self.index, &terms, doc_id);
 
                 // Generate snippet
-                let snippet = doc
-                    .content
-                    .chars()
-                    .take(100)
-                    .collect::<String>()
-                    + "...";
+                let snippet = doc.content.chars().take(100).collect::<String>() + "...";
 
                 Some(SearchResult {
                     doc_id: doc_id.clone(),
@@ -436,10 +425,17 @@ fn main() {
     ];
 
     for doc in docs {
-        println!("  Indexed: {} - {}", doc.id, &doc.content[..50.min(doc.content.len())]);
+        println!(
+            "  Indexed: {} - {}",
+            doc.id,
+            &doc.content[..50.min(doc.content.len())]
+        );
         engine.index(doc);
     }
-    println!("Total: {} documents indexed\n", engine.index.documents.len());
+    println!(
+        "Total: {} documents indexed\n",
+        engine.index.documents.len()
+    );
 
     // Simple search
     println!("\n  ═══ Simple Search: 'rust' ═══");

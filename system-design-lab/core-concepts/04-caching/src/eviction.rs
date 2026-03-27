@@ -39,17 +39,33 @@ pub fn demo() {
 
     // ── 1. Basic TTL: create with expiry ──
 
-    store.cache.set("temp", "disappears", 2);       // 2-second TTL
-    store.cache.set_permanent("perm", "stays");      // no TTL (bad practice!)
+    store.cache.set("temp", "disappears", 2); // 2-second TTL
+    store.cache.set_permanent("perm", "stays"); // no TTL (bad practice!)
 
     println!("    SET temp (2s TTL), perm (no TTL)");
-    println!("      temp: value={:?}, TTL={}s", store.cache.get("temp"), store.cache.ttl("temp"));
-    println!("      perm: value={:?}, TTL={} (no expiry)", store.cache.get("perm"), store.cache.ttl("perm"));
+    println!(
+        "      temp: value={:?}, TTL={}s",
+        store.cache.get("temp"),
+        store.cache.ttl("temp")
+    );
+    println!(
+        "      perm: value={:?}, TTL={} (no expiry)",
+        store.cache.get("perm"),
+        store.cache.ttl("perm")
+    );
 
     thread::sleep(Duration::from_secs(3));
     println!("\n    After 3 seconds:");
-    println!("      temp: value={:?}, TTL={} (gone)", store.cache.get("temp"), store.cache.ttl("temp"));
-    println!("      perm: value={:?}, TTL={} (still here)", store.cache.get("perm"), store.cache.ttl("perm"));
+    println!(
+        "      temp: value={:?}, TTL={} (gone)",
+        store.cache.get("temp"),
+        store.cache.ttl("temp")
+    );
+    println!(
+        "      perm: value={:?}, TTL={} (still here)",
+        store.cache.get("perm"),
+        store.cache.ttl("perm")
+    );
 
     // ── 2. EXPIRE: add TTL to existing key ──
 
@@ -63,7 +79,10 @@ pub fn demo() {
 
     store.cache.persist("session:abc");
     println!("\n    PERSIST — remove TTL:");
-    println!("      After PERSIST → TTL={} (immortal, dangerous!)", store.cache.ttl("session:abc"));
+    println!(
+        "      After PERSIST → TTL={} (immortal, dangerous!)",
+        store.cache.ttl("session:abc")
+    );
 
     // ── 4. Sliding TTL: reset on every access (session pattern) ──
     //
@@ -72,20 +91,26 @@ pub fn demo() {
     //
 
     println!("\n    Sliding TTL (session timeout pattern):");
-    store.cache.set("session:x", "active_user", 5);  // 5s inactivity timeout
+    store.cache.set("session:x", "active_user", 5); // 5s inactivity timeout
 
     for i in 1..=3 {
         thread::sleep(Duration::from_secs(1));
-        let _val = store.cache.get("session:x");     // user is active
-        store.cache.expire("session:x", 5);           // reset timeout
-        println!("      +{}s: user active → TTL reset to {}s",
-            i, store.cache.ttl("session:x"));
+        let _val = store.cache.get("session:x"); // user is active
+        store.cache.expire("session:x", 5); // reset timeout
+        println!(
+            "      +{}s: user active → TTL reset to {}s",
+            i,
+            store.cache.ttl("session:x")
+        );
     }
     println!("      Key alive after 3s because each access resets the clock");
 
     // Stop accessing → key expires
     println!("      Now user goes idle...");
     thread::sleep(Duration::from_secs(6));
-    println!("      +6s inactivity → value={:?}, TTL={} (expired)\n",
-        store.cache.get("session:x"), store.cache.ttl("session:x"));
+    println!(
+        "      +6s inactivity → value={:?}, TTL={} (expired)\n",
+        store.cache.get("session:x"),
+        store.cache.ttl("session:x")
+    );
 }

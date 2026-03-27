@@ -28,12 +28,18 @@ pub fn demo() {
 
         let server_addr: std::net::SocketAddr = "127.0.0.1:9007".parse().unwrap();
         let server_endpoint = quinn::Endpoint::server(server_config, server_addr).unwrap();
-        println!("  [QUIC Server] Listening on UDP {} (not TCP!)", server_addr);
+        println!(
+            "  [QUIC Server] Listening on UDP {} (not TCP!)",
+            server_addr
+        );
 
         let server = tokio::spawn(async move {
             let incoming = server_endpoint.accept().await.unwrap();
             let connection = incoming.await.unwrap();
-            println!("  [QUIC Server] Client connected (conn_id={})", connection.stable_id());
+            println!(
+                "  [QUIC Server] Client connected (conn_id={})",
+                connection.stable_id()
+            );
 
             loop {
                 match connection.accept_bi().await {
@@ -69,12 +75,22 @@ pub fn demo() {
         client_endpoint.set_default_client_config(client_config);
 
         let handshake_start = Instant::now();
-        let connection = client_endpoint.connect(server_addr, "localhost").unwrap().await.unwrap();
+        let connection = client_endpoint
+            .connect(server_addr, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
         let handshake_time = handshake_start.elapsed();
 
-        println!("  [QUIC Client] Connected! Handshake: {:?} (1 RTT, TLS 1.3 included!)", handshake_time);
+        println!(
+            "  [QUIC Client] Connected! Handshake: {:?} (1 RTT, TLS 1.3 included!)",
+            handshake_time
+        );
         println!("  [QUIC Client] Transport: UDP (not TCP)");
-        println!("  [QUIC Client] Connection ID: {} (survives IP changes!)\n", connection.stable_id());
+        println!(
+            "  [QUIC Client] Connection ID: {} (survives IP changes!)\n",
+            connection.stable_id()
+        );
 
         println!("  4 bidirectional streams on ONE QUIC connection:\n");
 

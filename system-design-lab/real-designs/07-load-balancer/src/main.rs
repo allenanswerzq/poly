@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Load Balancer Implementation
 //!
 //! Demonstrates various load balancing algorithms:
@@ -75,6 +76,12 @@ pub struct RoundRobin {
     counter: AtomicUsize,
 }
 
+impl Default for RoundRobin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoundRobin {
     pub fn new() -> Self {
         Self {
@@ -85,7 +92,9 @@ impl RoundRobin {
 
 impl LoadBalancer for RoundRobin {
     fn select(&self, servers: &[Server], _client_info: Option<&str>) -> Option<usize> {
-        let healthy: Vec<_> = servers.iter().enumerate()
+        let healthy: Vec<_> = servers
+            .iter()
+            .enumerate()
             .filter(|(_, s)| s.healthy)
             .collect();
 
@@ -105,6 +114,12 @@ impl LoadBalancer for RoundRobin {
 /// Weighted Round Robin - Servers with higher weight get more requests
 pub struct WeightedRoundRobin {
     counter: AtomicUsize,
+}
+
+impl Default for WeightedRoundRobin {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WeightedRoundRobin {
@@ -145,6 +160,12 @@ pub struct LeastConnections {
     stats: Arc<DashMap<String, ServerStats>>,
 }
 
+impl Default for LeastConnections {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LeastConnections {
     pub fn new() -> Self {
         Self {
@@ -176,7 +197,8 @@ impl LeastConnections {
 
 impl LoadBalancer for LeastConnections {
     fn select(&self, servers: &[Server], _client_info: Option<&str>) -> Option<usize> {
-        servers.iter()
+        servers
+            .iter()
             .enumerate()
             .filter(|(_, s)| s.healthy)
             .min_by_key(|(_, s)| self.get_connections(&s.id))
@@ -190,6 +212,12 @@ impl LoadBalancer for LeastConnections {
 
 /// IP Hash - Same client always goes to same server (sticky sessions)
 pub struct IpHash;
+
+impl Default for IpHash {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl IpHash {
     pub fn new() -> Self {
@@ -207,7 +235,9 @@ impl IpHash {
 
 impl LoadBalancer for IpHash {
     fn select(&self, servers: &[Server], client_info: Option<&str>) -> Option<usize> {
-        let healthy: Vec<_> = servers.iter().enumerate()
+        let healthy: Vec<_> = servers
+            .iter()
+            .enumerate()
             .filter(|(_, s)| s.healthy)
             .collect();
 
@@ -228,6 +258,12 @@ impl LoadBalancer for IpHash {
 /// Random selection
 pub struct RandomSelection;
 
+impl Default for RandomSelection {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RandomSelection {
     pub fn new() -> Self {
         Self
@@ -236,7 +272,9 @@ impl RandomSelection {
 
 impl LoadBalancer for RandomSelection {
     fn select(&self, servers: &[Server], _client_info: Option<&str>) -> Option<usize> {
-        let healthy: Vec<_> = servers.iter().enumerate()
+        let healthy: Vec<_> = servers
+            .iter()
+            .enumerate()
             .filter(|(_, s)| s.healthy)
             .collect();
 
@@ -286,7 +324,11 @@ impl LoadBalancerService {
     pub fn set_server_health(&self, server_id: &str, healthy: bool) {
         if let Some(server) = self.servers.write().iter_mut().find(|s| s.id == server_id) {
             server.healthy = healthy;
-            println!("[Health] {} is now {}", server_id, if healthy { "UP" } else { "DOWN" });
+            println!(
+                "[Health] {} is now {}",
+                server_id,
+                if healthy { "UP" } else { "DOWN" }
+            );
         }
     }
 
@@ -493,7 +535,7 @@ mod tests {
         assert_eq!(idx1, Some(0));
         assert_eq!(idx2, Some(1));
         assert_eq!(idx3, Some(2));
-        assert_eq!(idx4, Some(0));  // Wraps around
+        assert_eq!(idx4, Some(0)); // Wraps around
     }
 
     #[test]
@@ -516,9 +558,7 @@ mod tests {
         let mut servers = test_servers();
         servers[1].healthy = false;
 
-        let selections: Vec<_> = (0..6)
-            .filter_map(|_| rr.select(&servers, None))
-            .collect();
+        let selections: Vec<_> = (0..6).filter_map(|_| rr.select(&servers, None)).collect();
 
         // Should never select server 1
         assert!(selections.iter().all(|&idx| idx != 1));
@@ -540,6 +580,6 @@ mod tests {
         }
 
         // s2 should get roughly 2x the requests
-        assert!(counts[1] > counts[0] * 3 / 2);  // At least 1.5x
+        assert!(counts[1] > counts[0] * 3 / 2); // At least 1.5x
     }
 }

@@ -16,39 +16,64 @@ pub fn demo_reverse_proxy() {
         ]);
 
         let gateway = axum::Router::new()
-            .route("/api/users/:id", axum::routing::get({
-                move |Path(id): Path<u32>| async move {
-                    let client = reqwest::Client::new();
-                    let resp = client.get(format!("http://127.0.0.1:9101/users/{}", id))
-                        .send().await.unwrap();
-                    let body: Value = resp.json().await.unwrap();
-                    Json(body)
-                }
-            }))
-            .route("/api/orders/:id", axum::routing::get({
-                move |Path(id): Path<u32>| async move {
-                    let client = reqwest::Client::new();
-                    let resp = client.get(format!("http://127.0.0.1:9102/orders/{}", id))
-                        .send().await.unwrap();
-                    let body: Value = resp.json().await.unwrap();
-                    Json(body)
-                }
-            }));
+            .route(
+                "/api/users/:id",
+                axum::routing::get({
+                    move |Path(id): Path<u32>| async move {
+                        let client = reqwest::Client::new();
+                        let resp = client
+                            .get(format!("http://127.0.0.1:9101/users/{}", id))
+                            .send()
+                            .await
+                            .unwrap();
+                        let body: Value = resp.json().await.unwrap();
+                        Json(body)
+                    }
+                }),
+            )
+            .route(
+                "/api/orders/:id",
+                axum::routing::get({
+                    move |Path(id): Path<u32>| async move {
+                        let client = reqwest::Client::new();
+                        let resp = client
+                            .get(format!("http://127.0.0.1:9102/orders/{}", id))
+                            .send()
+                            .await
+                            .unwrap();
+                        let body: Value = resp.json().await.unwrap();
+                        Json(body)
+                    }
+                }),
+            );
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:9100").await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:9100")
+            .await
+            .unwrap();
         let server = tokio::spawn(async { axum::serve(listener, gateway).await.unwrap() });
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let client = reqwest::Client::new();
 
-        for (path, desc) in [("/api/users/1", "User Service"), ("/api/orders/42", "Order Service")] {
+        for (path, desc) in [
+            ("/api/users/1", "User Service"),
+            ("/api/orders/42", "Order Service"),
+        ] {
             let start = Instant::now();
-            let resp = client.get(format!("http://127.0.0.1:9100{}", path))
-                .send().await.unwrap();
+            let resp = client
+                .get(format!("http://127.0.0.1:9100{}", path))
+                .send()
+                .await
+                .unwrap();
             let body: Value = resp.json().await.unwrap();
-            println!("    GET {} → {} → {:?} ({:?})",
-                path, desc, body.get("service").unwrap(), start.elapsed());
+            println!(
+                "    GET {} → {} → {:?} ({:?})",
+                path,
+                desc,
+                body.get("service").unwrap(),
+                start.elapsed()
+            );
         }
 
         println!("\n    Client sees ONE endpoint (gateway:9100).");

@@ -57,7 +57,10 @@ fn main() {
     fs::rename(&extracted, &redis_dir).expect("failed to rename redis dir");
 
     // Compile
-    println!("cargo:warning=Compiling Redis {} (this takes ~30 seconds first time)...", REDIS_VERSION);
+    println!(
+        "cargo:warning=Compiling Redis {} (this takes ~30 seconds first time)...",
+        REDIS_VERSION
+    );
     let num_cpus = std::thread::available_parallelism()
         .map(|n| n.get().to_string())
         .unwrap_or_else(|_| "4".to_string());
@@ -82,6 +85,9 @@ fn main() {
     // Clean up tarball
     fs::remove_file(&tarball).ok();
 
-    println!("cargo:warning=Redis {} compiled successfully!", REDIS_VERSION);
+    println!(
+        "cargo:warning=Redis {} compiled successfully!",
+        REDIS_VERSION
+    );
     println!("cargo:rustc-env=REDIS_SERVER_PATH={}", redis_bin.display());
 }

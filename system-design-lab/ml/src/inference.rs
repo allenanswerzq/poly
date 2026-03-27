@@ -78,7 +78,10 @@ pub fn beam_search(
     eos_token: usize,
     vocab_size: usize,
 ) -> Vec<usize> {
-    let mut beams = vec![Beam { tokens: vec![], score: 0.0 }];
+    let mut beams = vec![Beam {
+        tokens: vec![],
+        score: 0.0,
+    }];
     let mut completed = Vec::new();
 
     for _step in 0..max_len {
@@ -93,9 +96,15 @@ pub fn beam_search(
                 new_tokens.push(token);
 
                 if token == eos_token {
-                    completed.push(Beam { tokens: new_tokens, score: new_score });
+                    completed.push(Beam {
+                        tokens: new_tokens,
+                        score: new_score,
+                    });
                 } else {
-                    candidates.push(Beam { tokens: new_tokens, score: new_score });
+                    candidates.push(Beam {
+                        tokens: new_tokens,
+                        score: new_score,
+                    });
                 }
             }
         }
@@ -104,7 +113,9 @@ pub fn beam_search(
         candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
         beams = candidates.into_iter().take(beam_width).collect();
 
-        if beams.is_empty() { break; }
+        if beams.is_empty() {
+            break;
+        }
     }
 
     // Return best completed beam (or best incomplete if none completed)
@@ -127,7 +138,7 @@ pub fn speculative_decode(
     // draft_sample: sample 1 token from SMALL model
     draft_sample: impl Fn(&[usize]) -> (usize, f32), // (token, log_prob)
     initial_tokens: &[usize],
-    num_draft: usize,   // how many speculative tokens to draft
+    num_draft: usize, // how many speculative tokens to draft
     num_steps: usize,
 ) -> Vec<usize> {
     let mut tokens = initial_tokens.to_vec();
@@ -183,9 +194,12 @@ pub fn speculative_decode(
         accepted_total += accepted;
     }
 
-    println!("    Speculative: drafted={}, accepted={}, rate={:.0}%",
-        drafted_total, accepted_total,
-        accepted_total as f32 / drafted_total as f32 * 100.0);
+    println!(
+        "    Speculative: drafted={}, accepted={}, rate={:.0}%",
+        drafted_total,
+        accepted_total,
+        accepted_total as f32 / drafted_total as f32 * 100.0
+    );
     tokens
 }
 
@@ -215,13 +229,15 @@ pub fn demo() {
             let mut probs = vec![-3.0; 5];
             probs[0] = -0.5; // token 0 is likely
             probs[1] = -1.0; // token 1 is somewhat likely
-            if tokens.len() >= 3 { probs[4] = -0.1; } // eos likely after 3 tokens
+            if tokens.len() >= 3 {
+                probs[4] = -0.1;
+            } // eos likely after 3 tokens
             probs
         },
-        3,    // beam width
-        6,    // max length
-        4,    // eos token = 4
-        5,    // vocab size
+        3, // beam width
+        6, // max length
+        4, // eos token = 4
+        5, // vocab size
     );
     println!("    Result: {:?}", result);
 
@@ -230,19 +246,21 @@ pub fn demo() {
     let result = speculative_decode(
         |_tokens, n| {
             // Mock target model: uniform-ish log probs
-            (0..n).map(|_| {
-                vec![-2.0, -1.5, -1.8, -2.2, -3.0]
-            }).collect()
+            (0..n).map(|_| vec![-2.0, -1.5, -1.8, -2.2, -3.0]).collect()
         },
         |_tokens| {
             // Mock draft model: biased toward token 1
             let mut rng = rand::thread_rng();
-            let token = if rng.gen::<f32>() < 0.6 { 1 } else { rng.gen_range(0..5) };
+            let token = if rng.gen::<f32>() < 0.6 {
+                1
+            } else {
+                rng.gen_range(0..5)
+            };
             (token, -1.5)
         },
-        &[0],   // initial tokens
-        3,       // draft 3 tokens
-        5,       // 5 speculative steps
+        &[0], // initial tokens
+        3,    // draft 3 tokens
+        5,    // 5 speculative steps
     );
     println!("    Generated {} tokens\n", result.len() - 1);
 }

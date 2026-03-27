@@ -1,6 +1,6 @@
-use polodb_core::Database;
-use polodb_core::CollectionT;
 use bson::{doc, Document};
+use polodb_core::CollectionT;
+use polodb_core::Database;
 
 // =============================================================================
 // Document Store — using PoloDB (real MongoDB-compatible embedded document DB)
@@ -39,31 +39,37 @@ pub fn demo() {
     let products = db.collection::<Document>("products");
 
     // Insert documents with DIFFERENT schemas — this is the point of a doc store
-    products.insert_one(doc! {
-        "name": "Widget",
-        "price": 9.99,
-        "tags": ["electronics", "gadgets"],
-        "specs": { "weight": "200g", "color": "blue" }
-    }).unwrap();
+    products
+        .insert_one(doc! {
+            "name": "Widget",
+            "price": 9.99,
+            "tags": ["electronics", "gadgets"],
+            "specs": { "weight": "200g", "color": "blue" }
+        })
+        .unwrap();
 
-    products.insert_one(doc! {
-        "name": "Gadget",
-        "price": 24.99,
-        "tags": ["electronics"],
-        "specs": { "weight": "500g", "color": "red", "battery": "lithium" }
-        // ↑ extra field 'battery' — no schema migration needed
-    }).unwrap();
+    products
+        .insert_one(doc! {
+            "name": "Gadget",
+            "price": 24.99,
+            "tags": ["electronics"],
+            "specs": { "weight": "500g", "color": "red", "battery": "lithium" }
+            // ↑ extra field 'battery' — no schema migration needed
+        })
+        .unwrap();
 
     // Embed related data directly (like MongoDB subdocuments)
-    products.insert_one(doc! {
-        "name": "Doohickey",
-        "price": 4.99,
-        "reviews": [
-            { "user": "Alice", "rating": 5, "text": "Love it!" },
-            { "user": "Bob", "rating": 3, "text": "It's okay" }
-        ]
-        // ↑ reviews embedded in the document, no separate table needed
-    }).unwrap();
+    products
+        .insert_one(doc! {
+            "name": "Doohickey",
+            "price": 4.99,
+            "reviews": [
+                { "user": "Alice", "rating": 5, "text": "Love it!" },
+                { "user": "Bob", "rating": 3, "text": "It's okay" }
+            ]
+            // ↑ reviews embedded in the document, no separate table needed
+        })
+        .unwrap();
 
     // Read a document with embedded reviews — no JOINs
     println!("    db.collection('products').find({{name: 'Doohickey'}})\n");
@@ -75,11 +81,16 @@ pub fn demo() {
 
     // Query: flexible schema — different docs have different fields
     println!("    Flexible schema — query docs with/without 'battery' field:");
-    let all: Vec<_> = products.find(doc! {}).run().unwrap()
-        .filter_map(|d| d.ok()).collect();
+    let all: Vec<_> = products
+        .find(doc! {})
+        .run()
+        .unwrap()
+        .filter_map(|d| d.ok())
+        .collect();
     for d in &all {
         let name = d.get_str("name").unwrap_or("?");
-        let battery = d.get_document("specs")
+        let battery = d
+            .get_document("specs")
             .ok()
             .and_then(|s| s.get_str("battery").ok());
         println!("    {}: battery = {:?}", name, battery);
@@ -87,14 +98,21 @@ pub fn demo() {
 
     // Query by field value — like MongoDB find()
     println!("\n    db.collection('products').find({{price: {{'$gt': 10}}}})");
-    let expensive: Vec<_> = products.find(doc! {
-        "price": { "$gt": 10.0 }
-    }).run().unwrap().filter_map(|d| d.ok()).collect();
+    let expensive: Vec<_> = products
+        .find(doc! {
+            "price": { "$gt": 10.0 }
+        })
+        .run()
+        .unwrap()
+        .filter_map(|d| d.ok())
+        .collect();
     println!("    Found {} products with price > $10:", expensive.len());
     for d in &expensive {
-        println!("    → {} (${:.2})",
+        println!(
+            "    → {} (${:.2})",
             d.get_str("name").unwrap_or("?"),
-            d.get_f64("price").unwrap_or(0.0));
+            d.get_f64("price").unwrap_or(0.0)
+        );
     }
 
     // Count documents

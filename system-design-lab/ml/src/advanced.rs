@@ -13,14 +13,15 @@ use std::collections::HashMap;
 //
 // Encoding: apply merge rules in priority order
 pub struct SimpleBPE {
-    merges: Vec<(String, String)>,  // ordered merge rules
-    vocab: HashMap<String, usize>,  // token → id
+    merges: Vec<(String, String)>, // ordered merge rules
+    vocab: HashMap<String, usize>, // token → id
 }
 
 impl SimpleBPE {
     pub fn train(text: &str, num_merges: usize) -> Self {
         // Start with character-level tokens
-        let mut words: Vec<Vec<String>> = text.split_whitespace()
+        let mut words: Vec<Vec<String>> = text
+            .split_whitespace()
             .map(|w| w.chars().map(|c| c.to_string()).collect())
             .collect();
 
@@ -31,13 +32,14 @@ impl SimpleBPE {
             let mut pair_counts: HashMap<(String, String), usize> = HashMap::new();
             for word in &words {
                 for pair in word.windows(2) {
-                    *pair_counts.entry((pair[0].clone(), pair[1].clone())).or_default() += 1;
+                    *pair_counts
+                        .entry((pair[0].clone(), pair[1].clone()))
+                        .or_default() += 1;
                 }
             }
 
             // Find most frequent pair
-            let best = pair_counts.into_iter()
-                .max_by_key(|(_, count)| *count);
+            let best = pair_counts.into_iter().max_by_key(|(_, count)| *count);
 
             let (best_pair, count) = match best {
                 Some((pair, count)) if count >= 2 => (pair, count),
@@ -75,8 +77,8 @@ impl SimpleBPE {
         // Add merged tokens
         for (a, b) in &merges {
             let merged = format!("{}{}", a, b);
-            if !vocab.contains_key(&merged) {
-                vocab.insert(merged, id);
+            if let std::collections::hash_map::Entry::Vacant(e) = vocab.entry(merged) {
+                e.insert(id);
                 id += 1;
             }
         }
@@ -85,7 +87,8 @@ impl SimpleBPE {
     }
 
     pub fn encode(&self, text: &str) -> Vec<String> {
-        let mut tokens: Vec<String> = text.chars()
+        let mut tokens: Vec<String> = text
+            .chars()
             .filter(|c| *c != ' ')
             .map(|c| c.to_string())
             .collect();
@@ -124,22 +127,32 @@ impl Int8Quantized {
         let scale = abs_max / 127.0; // map [-abs_max, abs_max] to [-127, 127]
         let zero_point = 0i8; // symmetric quantization
 
-        let data: Vec<i8> = float_data.iter().map(|&v| {
-            let quantized = (v / scale).round().clamp(-128.0, 127.0) as i8;
-            quantized
-        }).collect();
+        let data: Vec<i8> = float_data
+            .iter()
+            .map(|&v| (v / scale).round().clamp(-128.0, 127.0) as i8)
+            .collect();
 
-        Self { data, scale, zero_point }
+        Self {
+            data,
+            scale,
+            zero_point,
+        }
     }
 
     pub fn dequantize(&self) -> Vec<f32> {
-        self.data.iter().map(|&v| (v as f32 - self.zero_point as f32) * self.scale).collect()
+        self.data
+            .iter()
+            .map(|&v| (v as f32 - self.zero_point as f32) * self.scale)
+            .collect()
     }
 
     pub fn quantization_error(original: &[f32], dequantized: &[f32]) -> f32 {
-        original.iter().zip(dequantized)
+        original
+            .iter()
+            .zip(dequantized)
             .map(|(a, b)| (a - b).abs())
-            .sum::<f32>() / original.len() as f32
+            .sum::<f32>()
+            / original.len() as f32
     }
 }
 
@@ -148,11 +161,11 @@ impl Int8Quantized {
 // Loss = -log(σ(β * (log_π(chosen)/log_π_ref(chosen) - log_π(rejected)/log_π_ref(rejected))))
 // Simpler than RLHF: just train on (chosen, rejected) pairs directly.
 pub fn dpo_loss(
-    chosen_logps: &[f32],    // log P(chosen | prompt) under current policy
-    rejected_logps: &[f32],  // log P(rejected | prompt) under current policy
+    chosen_logps: &[f32],       // log P(chosen | prompt) under current policy
+    rejected_logps: &[f32],     // log P(rejected | prompt) under current policy
     ref_chosen_logps: &[f32],   // log P(chosen | prompt) under reference policy
     ref_rejected_logps: &[f32], // log P(rejected | prompt) under reference policy
-    beta: f32,               // temperature (typically 0.1)
+    beta: f32,                  // temperature (typically 0.1)
 ) -> f32 {
     let mut total_loss = 0.0;
     let n = chosen_logps.len();
@@ -173,10 +186,10 @@ pub fn dpo_loss(
 // loss = -min(ratio * advantage, clip(ratio, 1-ε, 1+ε) * advantage)
 // The clipping prevents the policy from changing too much in one step.
 pub fn ppo_loss(
-    new_logps: &[f32],     // log P(action) under new policy
-    old_logps: &[f32],     // log P(action) under old policy
-    advantages: &[f32],    // A(s,a) — how much better than baseline
-    clip_ratio: f32,       // ε, typically 0.2
+    new_logps: &[f32],  // log P(action) under new policy
+    old_logps: &[f32],  // log P(action) under old policy
+    advantages: &[f32], // A(s,a) — how much better than baseline
+    clip_ratio: f32,    // ε, typically 0.2
 ) -> f32 {
     let mut total_loss = 0.0;
     let n = new_logps.len();
@@ -194,20 +207,27 @@ pub fn ppo_loss(
 // Group Relative Policy Optimization: normalize advantages within groups.
 // For each prompt, generate G responses, score them, normalize advantages within the group.
 pub fn grpo_loss(
-    logps: &[f32],         // log P(response) for each response
-    rewards: &[f32],       // reward for each response
-    group_ids: &[usize],   // which group (prompt) each response belongs to
-    eps: f32,              // advantage clipping epsilon
+    logps: &[f32],       // log P(response) for each response
+    rewards: &[f32],     // reward for each response
+    group_ids: &[usize], // which group (prompt) each response belongs to
+    eps: f32,            // advantage clipping epsilon
 ) -> f32 {
     // Compute per-group mean and std of rewards
     let mut group_stats: HashMap<usize, (Vec<f32>, f32, f32)> = HashMap::new();
     for (i, &gid) in group_ids.iter().enumerate() {
-        group_stats.entry(gid).or_insert_with(|| (Vec::new(), 0.0, 0.0)).0.push(rewards[i]);
+        group_stats
+            .entry(gid)
+            .or_insert_with(|| (Vec::new(), 0.0, 0.0))
+            .0
+            .push(rewards[i]);
     }
     for (_, (rewards, mean, std)) in group_stats.iter_mut() {
         *mean = rewards.iter().sum::<f32>() / rewards.len() as f32;
-        *std = (rewards.iter().map(|r| (r - *mean).powi(2)).sum::<f32>() / rewards.len() as f32).sqrt();
-        if *std < 1e-6 { *std = 1.0; }
+        *std = (rewards.iter().map(|r| (r - *mean).powi(2)).sum::<f32>() / rewards.len() as f32)
+            .sqrt();
+        if *std < 1e-6 {
+            *std = 1.0;
+        }
     }
 
     let mut total_loss = 0.0;
@@ -223,10 +243,12 @@ pub fn grpo_loss(
 }
 
 fn softplus(x: f32) -> f32 {
-    if x > 20.0 { x } else { (1.0 + x.exp()).ln() }
+    if x > 20.0 {
+        x
+    } else {
+        (1.0 + x.exp()).ln()
+    }
 }
-
-use std::collections::HashMap as _;
 
 // =============================================================================
 // Demo
@@ -240,7 +262,10 @@ pub fn demo() {
     let bpe = SimpleBPE::train(text, 10);
     let tokens = bpe.encode("lowest");
     println!("    BPE trained on: \"{}\"", text);
-    println!("    Merges: {:?}", bpe.merges.iter().take(5).collect::<Vec<_>>());
+    println!(
+        "    Merges: {:?}",
+        bpe.merges.iter().take(5).collect::<Vec<_>>()
+    );
     println!("    encode(\"lowest\") = {:?}", tokens);
     println!("    Vocab size: {}", bpe.vocab.len());
 
@@ -252,8 +277,17 @@ pub fn demo() {
     println!("\n    INT8 quantization:");
     println!("    Original:    {:?}", floats);
     println!("    Quantized:   {:?}", quantized.data);
-    println!("    Dequantized: {:?}", dequantized.iter().map(|v| format!("{:.3}", v)).collect::<Vec<_>>());
-    println!("    Avg error:   {:.6} (scale={:.6})", error, quantized.scale);
+    println!(
+        "    Dequantized: {:?}",
+        dequantized
+            .iter()
+            .map(|v| format!("{:.3}", v))
+            .collect::<Vec<_>>()
+    );
+    println!(
+        "    Avg error:   {:.6} (scale={:.6})",
+        error, quantized.scale
+    );
 
     // DPO Loss
     let chosen = vec![-1.0, -0.8, -1.2];

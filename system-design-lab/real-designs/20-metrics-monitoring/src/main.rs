@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Metrics Monitoring System - Mini Implementation
 //!
 //! Demonstrates:
@@ -11,7 +12,6 @@
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -345,7 +345,10 @@ impl AlertManager {
     }
 
     fn get_active(&self) -> Vec<Alert> {
-        self.active_alerts.iter().map(|e| e.value().clone()).collect()
+        self.active_alerts
+            .iter()
+            .map(|e| e.value().clone())
+            .collect()
     }
 }
 
@@ -371,7 +374,10 @@ fn downsample(data: &[(u64, f64)], target_interval: u64) -> Vec<(u64, f64, f64, 
             // Emit previous bucket
             if !bucket_values.is_empty() {
                 let min = bucket_values.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max = bucket_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let max = bucket_values
+                    .iter()
+                    .cloned()
+                    .fold(f64::NEG_INFINITY, f64::max);
                 let avg: f64 = bucket_values.iter().sum::<f64>() / bucket_values.len() as f64;
                 result.push((bucket_start, min, max, avg));
             }
@@ -386,7 +392,10 @@ fn downsample(data: &[(u64, f64)], target_interval: u64) -> Vec<(u64, f64, f64, 
     // Don't forget last bucket
     if !bucket_values.is_empty() {
         let min = bucket_values.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = bucket_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max = bucket_values
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
         let avg: f64 = bucket_values.iter().sum::<f64>() / bucket_values.len() as f64;
         result.push((bucket_start, min, max, avg));
     }
@@ -423,7 +432,9 @@ impl MetricsRegistry {
 
         // Return reference (safe because DashMap entries are stable)
         unsafe {
-            &*(self.counters.get(&format!("{}_{:?}", name, HashMap::<String, String>::new()))
+            &*(self
+                .counters
+                .get(&format!("{}_{:?}", name, HashMap::<String, String>::new()))
                 .map(|e| &*e as *const Counter)
                 .unwrap_or(std::ptr::null()))
         }
@@ -485,9 +496,18 @@ fn main() {
     println!();
 
     println!("\n  ═══ Histogram Percentiles ═══");
-    println!("request_duration p50: {:.3}s", request_duration.percentile(0.5));
-    println!("request_duration p90: {:.3}s", request_duration.percentile(0.9));
-    println!("request_duration p99: {:.3}s", request_duration.percentile(0.99));
+    println!(
+        "request_duration p50: {:.3}s",
+        request_duration.percentile(0.5)
+    );
+    println!(
+        "request_duration p90: {:.3}s",
+        request_duration.percentile(0.9)
+    );
+    println!(
+        "request_duration p99: {:.3}s",
+        request_duration.percentile(0.99)
+    );
     println!();
 
     // Alerting
@@ -535,7 +555,10 @@ fn main() {
     println!("Downsampled to {} points (10s buckets)", downsampled.len());
 
     for (ts, min, max, avg) in downsampled.iter().take(3) {
-        println!("  ts={}: min={:.1}, max={:.1}, avg={:.1}", ts, min, max, avg);
+        println!(
+            "  ts={}: min={:.1}, max={:.1}, avg={:.1}",
+            ts, min, max, avg
+        );
     }
     println!();
 
@@ -548,10 +571,7 @@ fn main() {
     }
 
     let results = ts.query(20000, 30000);
-    println!(
-        "Query [20s-30s]: {} data points",
-        results.len()
-    );
+    println!("Query [20s-30s]: {} data points", results.len());
 
     println!("\n=== Key Concepts ===");
     println!("1. Metric Types: Counter (inc only), Gauge (any), Histogram (distribution)");
@@ -599,13 +619,7 @@ mod tests {
 
     #[test]
     fn test_downsampling() {
-        let data = vec![
-            (0, 10.0),
-            (1, 20.0),
-            (2, 30.0),
-            (10, 15.0),
-            (11, 25.0),
-        ];
+        let data = vec![(0, 10.0), (1, 20.0), (2, 30.0), (10, 15.0), (11, 25.0)];
 
         let result = downsample(&data, 10);
         assert_eq!(result.len(), 2);

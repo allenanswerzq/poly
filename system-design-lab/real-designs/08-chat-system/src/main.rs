@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # Chat System (WhatsApp-like) - Mini Implementation
 //!
 //! Demonstrates key components:
@@ -13,12 +14,11 @@
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tokio::time::sleep;
 
 // =============================================================================
 // Message Types
@@ -366,11 +366,17 @@ async fn main() {
     // 1:1 Chat
     println!("\n  ═══ 1:1 Messaging ═══");
     let msg1 = chat.send_message("alice", "bob", "Hey Bob!");
-    println!("Alice -> Bob: '{}' (status: {:?})", msg1.content, msg1.status);
+    println!(
+        "Alice -> Bob: '{}' (status: {:?})",
+        msg1.content, msg1.status
+    );
 
     // Bob receives and reads
     if let Ok(received) = bob_rx.try_recv() {
-        println!("Bob received: '{}' (status: {:?})", received.content, received.status);
+        println!(
+            "Bob received: '{}' (status: {:?})",
+            received.content, received.status
+        );
         chat.mark_read(&received.id);
     }
 
@@ -384,15 +390,21 @@ async fn main() {
     // Group Chat
     println!("\n  ═══ Group Chat ═══");
     let _charlie_rx = chat.presence.connect("charlie");
-    let group_id = chat.groups.create("Friends", vec![
-        "alice".to_string(),
-        "bob".to_string(),
-        "charlie".to_string(),
-    ]);
+    let group_id = chat.groups.create(
+        "Friends",
+        vec![
+            "alice".to_string(),
+            "bob".to_string(),
+            "charlie".to_string(),
+        ],
+    );
     println!("Created group 'Friends' with 3 members");
 
     let group_msgs = chat.send_group_message("alice", &group_id, "Hello everyone!");
-    println!("Alice sent to group: 'Hello everyone!' ({} recipients)", group_msgs.len());
+    println!(
+        "Alice sent to group: 'Hello everyone!' ({} recipients)",
+        group_msgs.len()
+    );
 
     // Offline Messages
     println!("\n--- Offline Message Queue ---");
@@ -404,9 +416,12 @@ async fn main() {
     println!("Alice sent 2 messages while Bob offline");
 
     // Bob comes back
-    let mut bob_rx = chat.presence.connect("bob");
+    let bob_rx = chat.presence.connect("bob");
     let offline = chat.sync_offline_messages("bob");
-    println!("Bob came online, received {} offline messages:", offline.len());
+    println!(
+        "Bob came online, received {} offline messages:",
+        offline.len()
+    );
     for msg in &offline {
         println!("  - '{}'", msg.content);
     }
@@ -479,11 +494,14 @@ mod tests {
         let _rx1 = chat.presence.connect("bob");
         let _rx2 = chat.presence.connect("charlie");
 
-        let group_id = chat.groups.create("Test", vec![
-            "alice".to_string(),
-            "bob".to_string(),
-            "charlie".to_string(),
-        ]);
+        let group_id = chat.groups.create(
+            "Test",
+            vec![
+                "alice".to_string(),
+                "bob".to_string(),
+                "charlie".to_string(),
+            ],
+        );
 
         let msgs = chat.send_group_message("alice", &group_id, "Hi all");
 

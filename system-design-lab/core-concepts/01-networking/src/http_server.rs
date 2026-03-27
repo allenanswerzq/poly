@@ -14,9 +14,15 @@ pub fn start_http_server(addr: &str) {
         rt.block_on(async move {
             let app = axum::Router::new()
                 .route("/", axum::routing::get(handle_root).post(handle_root))
-                .route("/health", axum::routing::get(handle_health).post(handle_health))
+                .route(
+                    "/health",
+                    axum::routing::get(handle_health).post(handle_health),
+                )
                 .route("/slow", axum::routing::get(handle_slow).post(handle_slow))
-                .route("/api/users", axum::routing::get(handle_users).post(handle_users))
+                .route(
+                    "/api/users",
+                    axum::routing::get(handle_users).post(handle_users),
+                )
                 .route("/stream/:size_kb", axum::routing::get(handle_stream));
 
             let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
@@ -44,9 +50,7 @@ async fn handle_users() -> axum::Json<serde_json::Value> {
 }
 
 /// Streams a response body in 16KB chunks — does NOT buffer the full payload.
-async fn handle_stream(
-    axum::extract::Path(size_kb): axum::extract::Path<u32>,
-) -> axum::body::Body {
+async fn handle_stream(axum::extract::Path(size_kb): axum::extract::Path<u32>) -> axum::body::Body {
     let chunk_size = 16 * 1024;
     let total_bytes = (size_kb as usize) * 1024;
 

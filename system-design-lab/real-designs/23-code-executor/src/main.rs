@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Code Executor (LeetCode) - Mini Implementation
 //!
 //! Demonstrates:
@@ -184,12 +185,7 @@ impl CodeRunner {
         }
     }
 
-    fn run_test(
-        &self,
-        code: &str,
-        language: Language,
-        test_case: &TestCase,
-    ) -> TestCaseResult {
+    fn run_test(&self, code: &str, language: Language, test_case: &TestCase) -> TestCaseResult {
         match self.sandbox.execute(code, language, &test_case.input) {
             Ok((output, runtime_ms, memory_kb)) => {
                 let passed = output.trim() == test_case.expected_output.trim();
@@ -209,12 +205,7 @@ impl CodeRunner {
         }
     }
 
-    fn run_all_tests(
-        &self,
-        code: &str,
-        language: Language,
-        problem: &Problem,
-    ) -> SubmissionResult {
+    fn run_all_tests(&self, code: &str, language: Language, problem: &Problem) -> SubmissionResult {
         // First compile
         if let Err(error) = self.compile(code, language) {
             return SubmissionResult {
@@ -391,13 +382,11 @@ impl ProblemStore {
             id: "reverse-string".to_string(),
             title: "Reverse String".to_string(),
             description: "Reverse a string in place".to_string(),
-            test_cases: vec![
-                TestCase {
-                    input: "hello".to_string(),
-                    expected_output: "result_for_hello".to_string(),
-                    is_hidden: false,
-                },
-            ],
+            test_cases: vec![TestCase {
+                input: "hello".to_string(),
+                expected_output: "result_for_hello".to_string(),
+                is_hidden: false,
+            }],
             time_limit_ms: 500,
             memory_limit_kb: 32768,
         });
@@ -500,11 +489,18 @@ def twoSum(nums, target):
             result.submission_id = sub.id;
 
             match &result.status {
-                ExecutionResult::Accepted { runtime_ms, memory_kb } => {
+                ExecutionResult::Accepted {
+                    runtime_ms,
+                    memory_kb,
+                } => {
                     println!("✅ Accepted!");
                     println!("   Runtime: {} ms", runtime_ms);
                     println!("   Memory: {} KB", memory_kb);
-                    println!("   Tests passed: {}/{}", result.test_results.len(), problem.test_cases.len());
+                    println!(
+                        "   Tests passed: {}/{}",
+                        result.test_results.len(),
+                        problem.test_cases.len()
+                    );
 
                     // Add to leaderboard
                     leaderboard.add(LeaderboardEntry {
@@ -515,7 +511,11 @@ def twoSum(nums, target):
                         submitted_at: sub.submitted_at,
                     });
                 }
-                ExecutionResult::WrongAnswer { test_case, expected, actual } => {
+                ExecutionResult::WrongAnswer {
+                    test_case,
+                    expected,
+                    actual,
+                } => {
                     println!("❌ Wrong Answer on test case {}", test_case);
                     println!("   Expected: {}", expected);
                     println!("   Actual: {}", actual);

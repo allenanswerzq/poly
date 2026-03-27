@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    unused_variables,
+    unused_imports,
+    clippy::needless_range_loop,
+    clippy::all
+)]
 //! # ML Interview Problem Set
 //!
 //! All problems implemented from scratch in Rust — no framework, pure math.
@@ -5,13 +12,13 @@
 //!
 //! Run: cargo run -p ml-problems
 
-mod tensor;
-mod fundamentals;
-mod attention;
-mod architecture;
-mod training;
-mod inference;
 mod advanced;
+mod architecture;
+mod attention;
+mod fundamentals;
+mod inference;
+mod tensor;
+mod training;
 
 fn main() {
     println!("╔══════════════════════════════════════════════════╗");

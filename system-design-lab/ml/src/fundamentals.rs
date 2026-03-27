@@ -54,18 +54,18 @@ pub fn relu(x: &[f32]) -> Vec<f32> {
 //   Why over ReLU? Smoother gradient landscape → slightly better training
 //
 pub fn gelu(x: &[f32]) -> Vec<f32> {
-    x.iter().map(|&v| {
-        0.5 * v * (1.0 + erf(v / std::f32::consts::SQRT_2))
-    }).collect()
+    x.iter()
+        .map(|&v| 0.5 * v * (1.0 + erf(v / std::f32::consts::SQRT_2)))
+        .collect()
 }
 
 // erf approximation (Abramowitz and Stegun)
 fn erf(x: f32) -> f32 {
-    let a1 = 0.254829592;
-    let a2 = -0.284496736;
-    let a3 = 1.421413741;
-    let a4 = -1.453152027;
-    let a5 = 1.061405429;
+    let a1 = 0.254_829_6;
+    let a2 = -0.284_496_72;
+    let a3 = 1.421_413_8;
+    let a4 = -1.453_152_1;
+    let a5 = 1.061_405_4;
     let p = 0.3275911;
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let x = x.abs();
@@ -223,9 +223,10 @@ pub fn layer_norm(x: &[f32], gamma: &[f32], beta: &[f32], eps: f32) -> Vec<f32> 
     let mean: f32 = x.iter().sum::<f32>() / n;
     let var: f32 = x.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n;
     let std = (var + eps).sqrt();
-    x.iter().enumerate().map(|(i, &v)| {
-        ((v - mean) / std) * gamma[i] + beta[i]
-    }).collect()
+    x.iter()
+        .enumerate()
+        .map(|(i, &v)| ((v - mean) / std) * gamma[i] + beta[i])
+        .collect()
 }
 
 // ── #7 BatchNorm ─────────────────────────────────────────────────────────────
@@ -276,11 +277,15 @@ impl BatchNorm {
         for f in 0..features {
             // Compute batch mean and var for this feature
             let mut mean = 0.0;
-            for b in 0..batch { mean += x.get(b, f); }
+            for b in 0..batch {
+                mean += x.get(b, f);
+            }
             mean /= batch as f32;
 
             let mut var = 0.0;
-            for b in 0..batch { var += (x.get(b, f) - mean).powi(2); }
+            for b in 0..batch {
+                var += (x.get(b, f) - mean).powi(2);
+            }
             var /= batch as f32;
 
             // Normalize
@@ -290,7 +295,8 @@ impl BatchNorm {
             }
 
             // Update running statistics
-            self.running_mean[f] = (1.0 - self.momentum) * self.running_mean[f] + self.momentum * mean;
+            self.running_mean[f] =
+                (1.0 - self.momentum) * self.running_mean[f] + self.momentum * mean;
             self.running_var[f] = (1.0 - self.momentum) * self.running_var[f] + self.momentum * var;
         }
         result
@@ -315,7 +321,10 @@ impl BatchNorm {
 pub fn rms_norm(x: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
     let n = x.len() as f32;
     let rms = (x.iter().map(|v| v * v).sum::<f32>() / n + eps).sqrt();
-    x.iter().enumerate().map(|(i, &v)| (v / rms) * weight[i]).collect()
+    x.iter()
+        .enumerate()
+        .map(|(i, &v)| (v / rms) * weight[i])
+        .collect()
 }
 
 // ── #15 SwiGLU MLP ───────────────────────────────────────────────────────────
@@ -345,9 +354,9 @@ pub fn rms_norm(x: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
 //   Why 11008? LLaMA uses hidden_dim = 2/3 * 4 * dim, rounded to multiple of 256.
 //   SwiGLU has 3 weight matrices instead of 2, so 2/3 factor keeps param count similar.
 pub struct SwiGLUMLP {
-    pub w_gate: Linear,  // (hidden, dim)
-    pub w_up: Linear,    // (hidden, dim)
-    pub w_down: Linear,  // (dim, hidden)
+    pub w_gate: Linear, // (hidden, dim)
+    pub w_up: Linear,   // (hidden, dim)
+    pub w_down: Linear, // (dim, hidden)
 }
 
 impl SwiGLUMLP {
@@ -409,9 +418,9 @@ pub fn dropout(x: &[f32], p: f32, training: bool) -> Vec<f32> {
     use rand::Rng;
     let mut rng = rand::thread_rng();
     let scale = 1.0 / (1.0 - p);
-    x.iter().map(|&v| {
-        if rng.gen::<f32>() < p { 0.0 } else { v * scale }
-    }).collect()
+    x.iter()
+        .map(|&v| if rng.gen::<f32>() < p { 0.0 } else { v * scale })
+        .collect()
 }
 
 // ── #18 Embedding ────────────────────────────────────────────────────────────
@@ -441,7 +450,9 @@ pub struct Embedding {
 
 impl Embedding {
     pub fn new(vocab_size: usize, embed_dim: usize) -> Self {
-        Self { weight: Tensor::rand_normal(vocab_size, embed_dim, 0.02) }
+        Self {
+            weight: Tensor::rand_normal(vocab_size, embed_dim, 0.02),
+        }
     }
 
     pub fn forward(&self, token_ids: &[usize]) -> Tensor {
@@ -483,7 +494,8 @@ impl Embedding {
 //   Typical max_norm: 1.0 for LLMs, 0.5-5.0 depending on model
 pub fn clip_grad_norm(grads: &mut [Vec<f32>], max_norm: f32) -> f32 {
     // Compute total norm across all parameter gradients
-    let total_norm: f32 = grads.iter()
+    let total_norm: f32 = grads
+        .iter()
         .flat_map(|g| g.iter())
         .map(|v| v * v)
         .sum::<f32>()
@@ -512,14 +524,27 @@ pub fn demo() {
     println!("    ReLU({:?}) = {:?}", x, relu(&x));
 
     // GELU
-    println!("    GELU({:?}) = {:?}", x, gelu(&x).iter().map(|v| format!("{:.3}", v)).collect::<Vec<_>>());
+    println!(
+        "    GELU({:?}) = {:?}",
+        x,
+        gelu(&x)
+            .iter()
+            .map(|v| format!("{:.3}", v))
+            .collect::<Vec<_>>()
+    );
 
     // Softmax
     let logits = vec![2.0, 1.0, 0.1];
     let probs = softmax(&logits);
-    println!("    Softmax({:?}) = {:?} (sum={:.3})",
-        logits, probs.iter().map(|v| format!("{:.3}", v)).collect::<Vec<_>>(),
-        probs.iter().sum::<f32>());
+    println!(
+        "    Softmax({:?}) = {:?} (sum={:.3})",
+        logits,
+        probs
+            .iter()
+            .map(|v| format!("{:.3}", v))
+            .collect::<Vec<_>>(),
+        probs.iter().sum::<f32>()
+    );
 
     // Cross-entropy
     let loss = cross_entropy_loss(&logits, 0);
@@ -536,19 +561,35 @@ pub fn demo() {
     let gamma = vec![1.0; 4];
     let beta = vec![0.0; 4];
     let normed = layer_norm(&x, &gamma, &beta, 1e-5);
-    println!("    LayerNorm({:?}) = {:?}",
-        x, normed.iter().map(|v| format!("{:.3}", v)).collect::<Vec<_>>());
+    println!(
+        "    LayerNorm({:?}) = {:?}",
+        x,
+        normed
+            .iter()
+            .map(|v| format!("{:.3}", v))
+            .collect::<Vec<_>>()
+    );
 
     // RMSNorm
     let weight = vec![1.0; 4];
     let rms = rms_norm(&x, &weight, 1e-5);
-    println!("    RMSNorm({:?}) = {:?}",
-        x, rms.iter().map(|v| format!("{:.3}", v)).collect::<Vec<_>>());
+    println!(
+        "    RMSNorm({:?}) = {:?}",
+        x,
+        rms.iter().map(|v| format!("{:.3}", v)).collect::<Vec<_>>()
+    );
 
     // Dropout
     let x = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
     let dropped = dropout(&x, 0.5, true);
-    println!("    Dropout({:?}, p=0.5) = {:?}", x, dropped.iter().map(|v| format!("{:.1}", v)).collect::<Vec<_>>());
+    println!(
+        "    Dropout({:?}, p=0.5) = {:?}",
+        x,
+        dropped
+            .iter()
+            .map(|v| format!("{:.1}", v))
+            .collect::<Vec<_>>()
+    );
 
     // Embedding
     let emb = Embedding::new(100, 8);
@@ -558,6 +599,14 @@ pub fn demo() {
     // Gradient clipping
     let mut grads = vec![vec![3.0, 4.0], vec![0.0, 5.0]]; // norm = sqrt(50) ≈ 7.07
     let norm = clip_grad_norm(&mut grads, 1.0);
-    println!("    GradClip(norm={:.2}, max=1.0) → scaled to norm={:.2}\n",
-        norm, grads.iter().flat_map(|g| g.iter()).map(|v| v*v).sum::<f32>().sqrt());
+    println!(
+        "    GradClip(norm={:.2}, max=1.0) → scaled to norm={:.2}\n",
+        norm,
+        grads
+            .iter()
+            .flat_map(|g| g.iter())
+            .map(|v| v * v)
+            .sum::<f32>()
+            .sqrt()
+    );
 }

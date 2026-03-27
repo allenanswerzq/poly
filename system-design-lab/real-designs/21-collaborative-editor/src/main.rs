@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Collaborative Editor (Google Docs) - Mini Implementation
 //!
 //! Demonstrates:
@@ -20,9 +21,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Operation {
-    Insert { position: usize, text: String, author: String },
-    Delete { position: usize, length: usize, author: String },
-    Retain { count: usize },
+    Insert {
+        position: usize,
+        text: String,
+        author: String,
+    },
+    Delete {
+        position: usize,
+        length: usize,
+        author: String,
+    },
+    Retain {
+        count: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -49,8 +60,16 @@ fn transform(op1: &Operation, op2: &Operation) -> (Operation, Operation) {
     match (op1, op2) {
         // Insert vs Insert
         (
-            Operation::Insert { position: p1, text: t1, author: a1 },
-            Operation::Insert { position: p2, text: t2, .. },
+            Operation::Insert {
+                position: p1,
+                text: t1,
+                author: a1,
+            },
+            Operation::Insert {
+                position: p2,
+                text: t2,
+                ..
+            },
         ) => {
             if *p1 <= *p2 {
                 // op1 is before or at same position, no change
@@ -77,8 +96,16 @@ fn transform(op1: &Operation, op2: &Operation) -> (Operation, Operation) {
 
         // Insert vs Delete
         (
-            Operation::Insert { position: p1, text: t1, author: a1 },
-            Operation::Delete { position: p2, length: l2, .. },
+            Operation::Insert {
+                position: p1,
+                text: t1,
+                author: a1,
+            },
+            Operation::Delete {
+                position: p2,
+                length: l2,
+                ..
+            },
         ) => {
             if *p1 <= *p2 {
                 // Insert before delete
@@ -115,8 +142,16 @@ fn transform(op1: &Operation, op2: &Operation) -> (Operation, Operation) {
 
         // Delete vs Insert
         (
-            Operation::Delete { position: p1, length: l1, author: a1 },
-            Operation::Insert { position: p2, text: t2, .. },
+            Operation::Delete {
+                position: p1,
+                length: l1,
+                author: a1,
+            },
+            Operation::Insert {
+                position: p2,
+                text: t2,
+                ..
+            },
         ) => {
             if *p1 >= *p2 {
                 // Delete after insert
@@ -146,8 +181,16 @@ fn transform(op1: &Operation, op2: &Operation) -> (Operation, Operation) {
 
         // Delete vs Delete
         (
-            Operation::Delete { position: p1, length: l1, author: a1 },
-            Operation::Delete { position: p2, length: l2, .. },
+            Operation::Delete {
+                position: p1,
+                length: l1,
+                author: a1,
+            },
+            Operation::Delete {
+                position: p2,
+                length: l2,
+                ..
+            },
         ) => {
             if *p1 >= p2 + l2 {
                 // op1 after op2
@@ -219,7 +262,9 @@ impl Document {
                     }
                 }
             }
-            Operation::Delete { position, length, .. } => {
+            Operation::Delete {
+                position, length, ..
+            } => {
                 if *position + *length > content.len() {
                     return Err("Delete range out of bounds");
                 }
@@ -498,7 +543,10 @@ fn main() {
     println!("Bob sets title (later timestamp): {:?}", title.get());
 
     title.set("Old Title".to_string(), 50, "charlie"); // Earlier timestamp
-    println!("Charlie sets title (earlier timestamp, ignored): {:?}", title.get());
+    println!(
+        "Charlie sets title (earlier timestamp, ignored): {:?}",
+        title.get()
+    );
 
     println!("\n--- CRDT: G-Counter ---");
     let counter1 = GCounter::new();
@@ -521,7 +569,10 @@ fn main() {
     println!("Document version: {}", session.document.get_version());
     println!("Participants:");
     for p in session.participants.iter() {
-        println!("  {} ({}) - last seen v{}", p.name, p.color, p.last_seen_version);
+        println!(
+            "  {} ({}) - last seen v{}",
+            p.name, p.color, p.last_seen_version
+        );
     }
 
     println!("\n=== Key Concepts ===");

@@ -19,16 +19,15 @@ pub fn demo() {
 
         // Make a real HTTPS request — TLS handshake happens under the hood
         let start = Instant::now();
-        let resp = client
-            .get("https://httpbin.org/get")
-            .send()
-            .await
-            .unwrap();
+        let resp = client.get("https://httpbin.org/get").send().await.unwrap();
 
         println!("  [HTTPS] GET https://httpbin.org/get");
         println!("  [HTTPS] Status: {}", resp.status());
         println!("  [HTTPS] Version: {:?}", resp.version());
-        println!("  [HTTPS] Time: {:?} (includes DNS + TCP + TLS + request)", start.elapsed());
+        println!(
+            "  [HTTPS] Time: {:?} (includes DNS + TCP + TLS + request)",
+            start.elapsed()
+        );
         println!();
 
         // Second request — TLS session reused (much faster)
@@ -41,7 +40,10 @@ pub fn demo() {
 
         println!("  [HTTPS] GET https://httpbin.org/headers (same client)");
         println!("  [HTTPS] Status: {}", resp2.status());
-        println!("  [HTTPS] Time: {:?} (TLS session reused!)", start.elapsed());
+        println!(
+            "  [HTTPS] Time: {:?} (TLS session reused!)",
+            start.elapsed()
+        );
         println!();
 
         println!("  That's it! reqwest handles TLS automatically:");
@@ -61,7 +63,10 @@ pub fn demo() {
         let cert_der = rustls_pki_types::CertificateDer::from(cert.cert);
         let key_der = rustls_pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
 
-        println!("  [Setup] Generated self-signed X.509 cert ({} bytes)", cert_der.len());
+        println!(
+            "  [Setup] Generated self-signed X.509 cert ({} bytes)",
+            cert_der.len()
+        );
 
         // Server config
         let server_config = rustls::ServerConfig::builder()
@@ -73,7 +78,9 @@ pub fn demo() {
             .unwrap();
 
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:9008").await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:9008")
+            .await
+            .unwrap();
 
         // Server task
         let acceptor_clone = acceptor.clone();
@@ -83,15 +90,31 @@ pub fn demo() {
             let tls = acceptor_clone.accept(tcp).await.unwrap();
             let (_, conn) = tls.get_ref();
 
-            println!("  [Server] TLS handshake with {} ({:?})", peer, handshake_start.elapsed());
-            println!("  [Server] Protocol: {:?}", conn.protocol_version().unwrap());
-            println!("  [Server] Cipher: {:?}", conn.negotiated_cipher_suite().unwrap());
+            println!(
+                "  [Server] TLS handshake with {} ({:?})",
+                peer,
+                handshake_start.elapsed()
+            );
+            println!(
+                "  [Server] Protocol: {:?}",
+                conn.protocol_version().unwrap()
+            );
+            println!(
+                "  [Server] Cipher: {:?}",
+                conn.negotiated_cipher_suite().unwrap()
+            );
 
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let mut tls = tls;
             let mut buf = [0u8; 4096];
             let n = tls.read(&mut buf).await.unwrap();
-            println!("  [Server] Request: {}", String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or(""));
+            println!(
+                "  [Server] Request: {}",
+                String::from_utf8_lossy(&buf[..n])
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+            );
 
             let resp = "HTTP/1.1 200 OK\r\nContent-Length: 21\r\n\r\nHello over TLS 1.3!\n";
             tls.write_all(resp.as_bytes()).await.unwrap();
@@ -107,22 +130,41 @@ pub fn demo() {
             .with_no_client_auth();
 
         let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
-        let tcp = tokio::net::TcpStream::connect("127.0.0.1:9008").await.unwrap();
+        let tcp = tokio::net::TcpStream::connect("127.0.0.1:9008")
+            .await
+            .unwrap();
 
         let handshake_start = Instant::now();
         let server_name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
         let mut tls = connector.connect(server_name, tcp).await.unwrap();
         let (_, conn) = tls.get_ref();
 
-        println!("\n  [Client] TLS handshake: {:?}", handshake_start.elapsed());
-        println!("  [Client] Protocol: {:?}", conn.protocol_version().unwrap());
-        println!("  [Client] Cipher: {:?}", conn.negotiated_cipher_suite().unwrap());
+        println!(
+            "\n  [Client] TLS handshake: {:?}",
+            handshake_start.elapsed()
+        );
+        println!(
+            "  [Client] Protocol: {:?}",
+            conn.protocol_version().unwrap()
+        );
+        println!(
+            "  [Client] Cipher: {:?}",
+            conn.negotiated_cipher_suite().unwrap()
+        );
 
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        tls.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").await.unwrap();
+        tls.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
         let mut buf = [0u8; 4096];
         let n = tls.read(&mut buf).await.unwrap();
-        println!("  [Client] Response: {}", String::from_utf8_lossy(&buf[..n]).lines().last().unwrap_or(""));
+        println!(
+            "  [Client] Response: {}",
+            String::from_utf8_lossy(&buf[..n])
+                .lines()
+                .last()
+                .unwrap_or("")
+        );
 
         server.await.ok();
     });

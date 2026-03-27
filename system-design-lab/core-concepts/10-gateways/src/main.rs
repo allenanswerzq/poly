@@ -10,16 +10,16 @@
 //! 7. Circuit breaker
 //! 8. Request aggregation (BFF pattern)
 
+mod aggregation;
+mod auth_middleware;
 mod backends;
-mod reverse_proxy;
-mod pingora_proxy;
+mod canary;
+mod circuit_breaker;
 mod pingora_auth;
 mod pingora_cb;
+mod pingora_proxy;
 mod rate_limiting;
-mod auth_middleware;
-mod circuit_breaker;
-mod aggregation;
-mod canary;
+mod reverse_proxy;
 
 fn main() {
     println!("╔══════════════════════════════════════════════════╗");
@@ -72,7 +72,8 @@ fn main() {
 
     // Summary
     println!("━━━ Gateway Summary ━━━");
-    println!("
+    println!(
+        "
 ┌──────────────────┬────────────────────────────────────────────┐
 │ Pattern          │ What it does                               │
 ├──────────────────┼────────────────────────────────────────────┤
@@ -87,7 +88,8 @@ fn main() {
 └──────────────────┴────────────────────────────────────────────┘
 
 Real-world: nginx (reverse proxy) → Kong/Envoy (API gateway) → Istio (service mesh)
-");
+"
+    );
 
     println!("╔══════════════════════════════════════════════════╗");
     println!("║              Demo Complete!                      ║");

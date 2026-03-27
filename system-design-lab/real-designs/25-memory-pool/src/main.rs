@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # High-Performance Memory Pool — Single Thread
 //!
 //! Implements and benchmarks three allocator designs:
@@ -93,7 +94,8 @@ struct SizeClassPool {
 impl SizeClassPool {
     fn new(blocks_per_class: usize) -> Self {
         let size_classes = [16, 64, 256, 1024, 4096];
-        let pools = size_classes.iter()
+        let pools = size_classes
+            .iter()
             .map(|&size| (size, SlabPool::new(size, blocks_per_class)))
             .collect();
         Self { pools }
@@ -192,7 +194,10 @@ fn main() {
     println!("━━━ 1. Fixed-Size Slab Pool ━━━\n");
     {
         let mut pool = SlabPool::new(64, 1000); // 1000 blocks of 64 bytes
-        println!("    Pool: 1000 × 64-byte blocks ({} KB total)", 1000 * 64 / 1024);
+        println!(
+            "    Pool: 1000 × 64-byte blocks ({} KB total)",
+            1000 * 64 / 1024
+        );
         println!("    Free blocks: {}\n", pool.available());
 
         // Allocate some blocks
@@ -202,14 +207,22 @@ fn main() {
             ptrs.push(ptr);
         }
         println!("    Allocated 5 blocks");
-        println!("    Free blocks: {}, In use: {}\n", pool.available(), pool.allocated);
+        println!(
+            "    Free blocks: {}, In use: {}\n",
+            pool.available(),
+            pool.allocated
+        );
 
         // Free them back
         for ptr in ptrs {
             pool.free(ptr);
         }
         println!("    Freed all 5 blocks");
-        println!("    Free blocks: {}, In use: {}\n", pool.available(), pool.allocated);
+        println!(
+            "    Free blocks: {}, In use: {}\n",
+            pool.available(),
+            pool.allocated
+        );
     }
 
     // ── 2. Size-Class Pool Demo ──
@@ -219,15 +232,31 @@ fn main() {
 
         println!("    Size classes: 16, 64, 256, 1024, 4096 bytes\n");
 
-        let (ptr1, class1) = pool.alloc(10).unwrap();   // 10 bytes → 16-byte class
-        let (ptr2, class2) = pool.alloc(50).unwrap();   // 50 bytes → 64-byte class
-        let (ptr3, class3) = pool.alloc(200).unwrap();  // 200 bytes → 256-byte class
-        let (ptr4, class4) = pool.alloc(500).unwrap();  // 500 bytes → 1024-byte class
+        let (ptr1, class1) = pool.alloc(10).unwrap(); // 10 bytes → 16-byte class
+        let (ptr2, class2) = pool.alloc(50).unwrap(); // 50 bytes → 64-byte class
+        let (ptr3, class3) = pool.alloc(200).unwrap(); // 200 bytes → 256-byte class
+        let (ptr4, class4) = pool.alloc(500).unwrap(); // 500 bytes → 1024-byte class
 
-        println!("    alloc(10 bytes)  → {}-byte block (waste: {} bytes)", class1, class1 - 10);
-        println!("    alloc(50 bytes)  → {}-byte block (waste: {} bytes)", class2, class2 - 50);
-        println!("    alloc(200 bytes) → {}-byte block (waste: {} bytes)", class3, class3 - 200);
-        println!("    alloc(500 bytes) → {}-byte block (waste: {} bytes)\n", class4, class4 - 500);
+        println!(
+            "    alloc(10 bytes)  → {}-byte block (waste: {} bytes)",
+            class1,
+            class1 - 10
+        );
+        println!(
+            "    alloc(50 bytes)  → {}-byte block (waste: {} bytes)",
+            class2,
+            class2 - 50
+        );
+        println!(
+            "    alloc(200 bytes) → {}-byte block (waste: {} bytes)",
+            class3,
+            class3 - 200
+        );
+        println!(
+            "    alloc(500 bytes) → {}-byte block (waste: {} bytes)\n",
+            class4,
+            class4 - 500
+        );
 
         println!("    Internal fragmentation: up to ~50% per allocation.");
         println!("    But: zero external fragmentation, O(1) alloc/free.\n");
@@ -243,7 +272,11 @@ fn main() {
     {
         let mut arena = Arena::new(4096); // 4KB arena
 
-        println!("    Arena: 4096 bytes, used: {}, remaining: {}\n", arena.used(), arena.remaining());
+        println!(
+            "    Arena: 4096 bytes, used: {}, remaining: {}\n",
+            arena.used(),
+            arena.remaining()
+        );
 
         // Simulate a request: allocate headers, body, response
         let _headers = arena.alloc(128, 8).unwrap();
@@ -255,11 +288,19 @@ fn main() {
         let _response = arena.alloc(256, 8).unwrap();
         println!("    alloc(256) for response → used: {}", arena.used());
 
-        println!("    Allocations: {}, remaining: {} bytes\n", arena.alloc_count, arena.remaining());
+        println!(
+            "    Allocations: {}, remaining: {} bytes\n",
+            arena.alloc_count,
+            arena.remaining()
+        );
 
         // Request done → free everything at once
         arena.reset();
-        println!("    arena.reset() → used: {}, remaining: {}", arena.used(), arena.remaining());
+        println!(
+            "    arena.reset() → used: {}, remaining: {}",
+            arena.used(),
+            arena.remaining()
+        );
         println!("    All memory reclaimed in O(1). No per-object free needed.\n");
     }
 
@@ -277,8 +318,12 @@ fn main() {
             pool.free(ptr);
         }
         let pool_time = start.elapsed();
-        println!("    Slab pool (alloc+free × {}): {:?} ({:.1}ns/op)",
-            iterations, pool_time, pool_time.as_nanos() as f64 / iterations as f64);
+        println!(
+            "    Slab pool (alloc+free × {}): {:?} ({:.1}ns/op)",
+            iterations,
+            pool_time,
+            pool_time.as_nanos() as f64 / iterations as f64
+        );
     }
 
     // Benchmark: System allocator (Box)
@@ -289,8 +334,12 @@ fn main() {
             drop(b);
         }
         let sys_time = start.elapsed();
-        println!("    System alloc (Box × {}):     {:?} ({:.1}ns/op)",
-            iterations, sys_time, sys_time.as_nanos() as f64 / iterations as f64);
+        println!(
+            "    System alloc (Box × {}):     {:?} ({:.1}ns/op)",
+            iterations,
+            sys_time,
+            sys_time.as_nanos() as f64 / iterations as f64
+        );
     }
 
     // Benchmark: Arena bump alloc
@@ -301,8 +350,12 @@ fn main() {
             let _ = arena.alloc(64, 8).unwrap();
         }
         let arena_time = start.elapsed();
-        println!("    Arena bump (alloc × {}):     {:?} ({:.1}ns/op)",
-            iterations, arena_time, arena_time.as_nanos() as f64 / iterations as f64);
+        println!(
+            "    Arena bump (alloc × {}):     {:?} ({:.1}ns/op)",
+            iterations,
+            arena_time,
+            arena_time.as_nanos() as f64 / iterations as f64
+        );
     }
 
     // Benchmark: Arena reset (free all at once)
@@ -317,8 +370,12 @@ fn main() {
             }
         }
         let arena_reset_time = start.elapsed();
-        println!("    Arena fill+reset (× {}):     {:?} ({:.1}ns/op)\n",
-            iterations, arena_reset_time, arena_reset_time.as_nanos() as f64 / iterations as f64);
+        println!(
+            "    Arena fill+reset (× {}):     {:?} ({:.1}ns/op)\n",
+            iterations,
+            arena_reset_time,
+            arena_reset_time.as_nanos() as f64 / iterations as f64
+        );
     }
 
     // ── Summary ──

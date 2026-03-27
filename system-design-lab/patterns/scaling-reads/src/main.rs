@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Scaling Reads Pattern Demos
 //!
 //! This module demonstrates common patterns for scaling read-heavy workloads:

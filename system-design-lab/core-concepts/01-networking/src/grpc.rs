@@ -45,7 +45,10 @@ impl Greeter for MyGreeter {
         request: tonic::Request<HelloRequest>,
     ) -> Result<tonic::Response<Self::SayHelloStreamStream>, tonic::Status> {
         let name = request.into_inner().name;
-        println!("  [gRPC Server] SayHelloStream(name=\"{}\") — streaming 5 responses", name);
+        println!(
+            "  [gRPC Server] SayHelloStream(name=\"{}\") — streaming 5 responses",
+            name
+        );
 
         let (tx, rx) = tokio::sync::mpsc::channel(5);
         tokio::spawn(async move {
@@ -59,7 +62,9 @@ impl Greeter for MyGreeter {
             }
         });
 
-        Ok(tonic::Response::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
+        Ok(tonic::Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
     }
 }
 
@@ -74,7 +79,7 @@ pub fn demo(_base_url: &str) {
         let addr = "127.0.0.1:9012".parse().unwrap();
         let server = tokio::spawn(async move {
             tonic::transport::Server::builder()
-                .add_service(GreeterServer::new(MyGreeter::default()))
+                .add_service(GreeterServer::new(MyGreeter))
                 .serve(addr)
                 .await
                 .unwrap();
@@ -85,7 +90,9 @@ pub fn demo(_base_url: &str) {
 
         // ── Unary RPC ────────────────────────────────────────────────────
         println!("  1) Unary RPC: SayHello(\"Alice\")\n");
-        let mut client = GreeterClient::connect("http://127.0.0.1:9012").await.unwrap();
+        let mut client = GreeterClient::connect("http://127.0.0.1:9012")
+            .await
+            .unwrap();
 
         let start = Instant::now();
         let response = client
@@ -98,7 +105,9 @@ pub fn demo(_base_url: &str) {
         let reply = response.into_inner();
         println!(
             "     Response: message=\"{}\" count={} ({:?})\n",
-            reply.message, reply.count, start.elapsed()
+            reply.message,
+            reply.count,
+            start.elapsed()
         );
 
         // ── Concurrent unary RPCs ────────────────────────────────────────
@@ -130,7 +139,10 @@ pub fn demo(_base_url: &str) {
         for (name, msg, elapsed) in &results {
             println!("     SayHello(\"{}\") → \"{}\" ({:?})", name, msg, elapsed);
         }
-        println!("     Total: {:?} (all 5 on one HTTP/2 connection)\n", start.elapsed());
+        println!(
+            "     Total: {:?} (all 5 on one HTTP/2 connection)\n",
+            start.elapsed()
+        );
 
         // ── Server streaming RPC ─────────────────────────────────────────
         println!("  3) Server streaming RPC: SayHelloStream(\"World\")\n");
@@ -149,12 +161,15 @@ pub fn demo(_base_url: &str) {
             stream_count += 1;
             println!(
                 "     Stream #{}: message=\"{}\" ({:?})",
-                reply.count, reply.message, start.elapsed()
+                reply.count,
+                reply.message,
+                start.elapsed()
             );
         }
         println!(
             "     Stream complete: {} messages ({:?})\n",
-            stream_count, start.elapsed()
+            stream_count,
+            start.elapsed()
         );
 
         server.abort();

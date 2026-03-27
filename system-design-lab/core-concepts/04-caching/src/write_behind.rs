@@ -66,25 +66,18 @@ impl WriteBehind {
         self.store.cache.set_and_sadd(key, value, 300, DIRTY_SET);
     }
 
-    /// Read: cache → miss → DB → populate cache
-    fn get(&self, key: &str) -> Option<String> {
-        if let Some(v) = self.store.cache.get(key) { return Some(v); }
-        let v = self.store.db.get(key)?;
-        self.store.cache.set(key, &v, 300);
-        Some(v)
-    }
-
     /// Flush dirty keys to DB. Race-safe:
     ///   1. RENAME dirty_keys → dirty_keys:processing  (atomic swap)
     ///      Now writers SADD to a fresh dirty_keys, not the one we're reading.
     ///   2. SMEMBERS processing → for each: read cache → write DB
     ///   3. DEL processing
+    ///
     /// No concurrent writes are lost because step 1 atomically moves
     /// the set away from writers.
     fn flush(&self) -> i32 {
         // Step 1: atomic swap — writers now write to a new dirty_keys
         if !self.store.cache.rename(DIRTY_SET, PROCESSING_SET) {
-            return 0;  // dirty_keys doesn't exist → nothing to flush
+            return 0; // dirty_keys doesn't exist → nothing to flush
         }
         // Step 2: drain the processing set into DB
         let keys = self.store.cache.smembers(PROCESSING_SET);
@@ -120,14 +113,20 @@ pub fn demo() {
         wb.set(&key, &format!("{}", i));
     }
     println!("      Writes to cache: 100");
-    println!("      Dirty keys (Redis SCARD): {} (coalesced by SADD)", wb.dirty_count());
-    println!("      DB writes so far: {} (none until flush)", store.db.count());
+    println!(
+        "      Dirty keys (Redis SCARD): {} (coalesced by SADD)",
+        wb.dirty_count()
+    );
+    println!(
+        "      DB writes so far: {} (none until flush)",
+        store.db.count()
+    );
 
     // ── Async flush: background thread reads dirty set from Redis → DB ──
 
     let wb2 = Arc::clone(&wb);
     let flusher = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(200));   // batch window
+        thread::sleep(Duration::from_millis(200)); // batch window
         wb2.flush()
     });
 

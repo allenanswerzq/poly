@@ -62,18 +62,23 @@ impl HotKeyCache {
         // L1 miss → L2 (Redis)
         if let Some(val) = cache.get(key) {
             self.l2_hits.fetch_add(1, Ordering::Relaxed);
-            self.l1.insert(key.to_string(), (val.clone(), Instant::now()));
+            self.l1
+                .insert(key.to_string(), (val.clone(), Instant::now()));
             return Some(val);
         }
         // L2 miss → DB (rare)
         let val = self.store.db.get(key)?;
         cache.set(key, &val, 300);
-        self.l1.insert(key.to_string(), (val.clone(), Instant::now()));
+        self.l1
+            .insert(key.to_string(), (val.clone(), Instant::now()));
         Some(val)
     }
 
     fn stats(&self) -> (u64, u64) {
-        (self.l1_hits.load(Ordering::Relaxed), self.l2_hits.load(Ordering::Relaxed))
+        (
+            self.l1_hits.load(Ordering::Relaxed),
+            self.l2_hits.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -81,11 +86,17 @@ pub fn demo() {
     println!("\n  ═══ Hot Key + L1 Local Cache ═══\n");
 
     let store = Arc::new(Store::new());
-    let hk = Arc::new(HotKeyCache::new(Arc::clone(&store), 5));  // 5ms L1 TTL
+    let hk = Arc::new(HotKeyCache::new(Arc::clone(&store), 5)); // 5ms L1 TTL
 
     // Seed the hot key in both DB and Redis
-    store.db.set("trending:1", r#"{"topic":"Breaking News","views":1000000}"#);
-    store.cache.set("trending:1", r#"{"topic":"Breaking News","views":1000000}"#, 300);
+    store
+        .db
+        .set("trending:1", r#"{"topic":"Breaking News","views":1000000}"#);
+    store.cache.set(
+        "trending:1",
+        r#"{"topic":"Breaking News","views":1000000}"#,
+        300,
+    );
 
     // Simulate 10 threads × 1000 reads on the same key
     let total_reads = 10_000u64;
@@ -103,7 +114,9 @@ pub fn demo() {
             }
         }));
     }
-    for h in handles { h.join().unwrap(); }
+    for h in handles {
+        h.join().unwrap();
+    }
     let elapsed = start.elapsed();
 
     let (l1_hits, l2_hits) = hk.stats();
@@ -112,6 +125,12 @@ pub fn demo() {
     println!("    L1 hits: {} ({:.1}%)", l1_hits, l1_pct);
     println!("    L2 hits: {} ({:.1}%)", l2_hits, 100.0 - l1_pct);
     println!("    Total:   {} reads in {:?}", total_reads, elapsed);
-    println!("    L1 absorbed {:.0}x the Redis load\n",
-        if l2_hits > 0 { l1_hits as f64 / l2_hits as f64 } else { f64::INFINITY });
+    println!(
+        "    L1 absorbed {:.0}x the Redis load\n",
+        if l2_hits > 0 {
+            l1_hits as f64 / l2_hits as f64
+        } else {
+            f64::INFINITY
+        }
+    );
 }

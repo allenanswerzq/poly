@@ -27,8 +27,8 @@ struct RateLimiter {
     // Concurrent hashmap: "client-key" → (remaining_tokens, last_refill_unix_secs)
     // DashMap allows multiple threads to read/write without a global lock
     buckets: DashMap<String, (u32, u64)>,
-    max_tokens: u32,    // bucket capacity (also the max burst size)
-    refill_rate: u32,   // how many tokens are added per second
+    max_tokens: u32,  // bucket capacity (also the max burst size)
+    refill_rate: u32, // how many tokens are added per second
 }
 
 impl RateLimiter {
@@ -42,9 +42,15 @@ impl RateLimiter {
 
     // Returns true if the request is allowed, false if rate-limited (429).
     fn allow(&self, key: &str) -> bool {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-        let mut entry = self.buckets.entry(key.to_string()).or_insert((self.max_tokens, now));
+        let mut entry = self
+            .buckets
+            .entry(key.to_string())
+            .or_insert((self.max_tokens, now));
         let (tokens, last_refill) = entry.value_mut();
 
         // Step 1: Refill — add tokens based on how much time has passed
@@ -72,10 +78,19 @@ pub fn demo_rate_limiting() {
 
     for i in 1..=8 {
         let allowed = limiter.allow("client-A");
-        println!("    Request #{}: {} {}",
+        println!(
+            "    Request #{}: {} {}",
             i,
-            if allowed { "✓ ALLOWED" } else { "✗ REJECTED (429)" },
-            if i == 5 { "← bucket empty after this" } else { "" }
+            if allowed {
+                "✓ ALLOWED"
+            } else {
+                "✗ REJECTED (429)"
+            },
+            if i == 5 {
+                "← bucket empty after this"
+            } else {
+                ""
+            }
         );
     }
 
@@ -87,7 +102,10 @@ pub fn demo_rate_limiting() {
     let a = limiter.allow("client-B");
     let b = limiter.allow("client-C");
     println!("    client-B: {} (fresh bucket)", if a { "✓" } else { "✗" });
-    println!("    client-C: {} (fresh bucket)\n", if b { "✓" } else { "✗" });
+    println!(
+        "    client-C: {} (fresh bucket)\n",
+        if b { "✓" } else { "✗" }
+    );
 }
 
 // =============================================================================
@@ -105,12 +123,19 @@ struct FixedWindowLimiter {
 
 impl FixedWindowLimiter {
     fn new(max_requests: u32, window_secs: u64) -> Self {
-        Self { windows: DashMap::new(), max_requests, window_secs }
+        Self {
+            windows: DashMap::new(),
+            max_requests,
+            window_secs,
+        }
     }
 
     fn allow(&self, key: &str, now: u64) -> bool {
         let window_start = now / self.window_secs * self.window_secs;
-        let mut entry = self.windows.entry(key.to_string()).or_insert((0, window_start));
+        let mut entry = self
+            .windows
+            .entry(key.to_string())
+            .or_insert((0, window_start));
         let (count, entry_window) = entry.value_mut();
 
         if *entry_window != window_start {
@@ -142,11 +167,15 @@ struct SlidingWindowLogLimiter {
 
 impl SlidingWindowLogLimiter {
     fn new(max_requests: u32, window_ms: u64) -> Self {
-        Self { logs: DashMap::new(), max_requests, window_ms }
+        Self {
+            logs: DashMap::new(),
+            max_requests,
+            window_ms,
+        }
     }
 
     fn allow(&self, key: &str, now_ms: u64) -> bool {
-        let mut entry = self.logs.entry(key.to_string()).or_insert_with(Vec::new);
+        let mut entry = self.logs.entry(key.to_string()).or_default();
         let timestamps = entry.value_mut();
 
         let cutoff = now_ms.saturating_sub(self.window_ms);
@@ -177,7 +206,11 @@ struct LeakyBucketLimiter {
 
 impl LeakyBucketLimiter {
     fn new(capacity: f64, leak_rate: f64) -> Self {
-        Self { buckets: DashMap::new(), capacity, leak_rate }
+        Self {
+            buckets: DashMap::new(),
+            capacity,
+            leak_rate,
+        }
     }
 
     fn allow(&self, key: &str, now_ms: u64) -> bool {
@@ -210,17 +243,26 @@ pub fn demo_rate_limiting_comparison() {
     let fw = FixedWindowLimiter::new(5, 1);
     for i in 1..=7 {
         let allowed = fw.allow("client", 0);
-        println!("    Req #{} at t=0.{}s: {}", i, i, if allowed { "✓" } else { "✗ REJECTED" });
+        println!(
+            "    Req #{} at t=0.{}s: {}",
+            i,
+            i,
+            if allowed { "✓" } else { "✗ REJECTED" }
+        );
     }
     println!("\n    Boundary problem:");
     let fw2 = FixedWindowLimiter::new(5, 10);
     for i in 1..=5 {
         fw2.allow("client", 9);
-        if i == 5 { println!("    5 requests at t=9s  (end of window 1)   → all ✓"); }
+        if i == 5 {
+            println!("    5 requests at t=9s  (end of window 1)   → all ✓");
+        }
     }
     for i in 1..=5 {
         fw2.allow("client", 10);
-        if i == 5 { println!("    5 requests at t=10s (start of window 2) → all ✓"); }
+        if i == 5 {
+            println!("    5 requests at t=10s (start of window 2) → all ✓");
+        }
     }
     println!("    → 10 requests in 1 second! Limit was 5/10s. That's the bug.\n");
 
@@ -230,10 +272,18 @@ pub fn demo_rate_limiting_comparison() {
     let times = [100, 200, 400, 600, 800, 900, 950];
     for (i, &t) in times.iter().enumerate() {
         let allowed = sw.allow("client", t);
-        println!("    Req #{} at t={}ms: {}", i + 1, t, if allowed { "✓" } else { "✗ REJECTED" });
+        println!(
+            "    Req #{} at t={}ms: {}",
+            i + 1,
+            t,
+            if allowed { "✓" } else { "✗ REJECTED" }
+        );
     }
     let log_size = sw.logs.get("client").map(|v| v.len()).unwrap_or(0);
-    println!("\n    Stored {} timestamps in memory (grows with every request!)", log_size);
+    println!(
+        "\n    Stored {} timestamps in memory (grows with every request!)",
+        log_size
+    );
     println!("    At 10K req/s → 10,000 timestamps per client per second.\n");
 
     // --- Leaky Bucket ---
@@ -241,16 +291,26 @@ pub fn demo_rate_limiting_comparison() {
     let lb = LeakyBucketLimiter::new(5.0, 2.0);
     for i in 1..=7 {
         let allowed = lb.allow("client", 0);
-        println!("    Req #{} at t=0ms:    {}{}", i,
+        println!(
+            "    Req #{} at t=0ms:    {}{}",
+            i,
             if allowed { "✓" } else { "✗ REJECTED" },
-            if i == 5 { " ← bucket full" } else { "" });
+            if i == 5 { " ← bucket full" } else { "" }
+        );
     }
     println!("\n    ...1 second passes (2 units leak out)...\n");
     for i in 1..=3 {
         let allowed = lb.allow("client", 1000);
-        println!("    Req #{} at t=1000ms: {}{}", i + 7,
+        println!(
+            "    Req #{} at t=1000ms: {}{}",
+            i + 7,
             if allowed { "✓" } else { "✗ REJECTED" },
-            if !allowed { " ← only 2 leaked, bucket full again" } else { "" });
+            if !allowed {
+                " ← only 2 leaked, bucket full again"
+            } else {
+                ""
+            }
+        );
     }
     println!("\n    Leaky bucket: strict fixed output rate. No bursts.\n");
 

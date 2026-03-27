@@ -23,7 +23,10 @@ impl CircuitBreaker {
         if failures < self.threshold {
             return false;
         }
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let last = self.last_failure.load(Ordering::Relaxed);
         now - last < self.cooldown_secs
     }
@@ -34,7 +37,10 @@ impl CircuitBreaker {
 
     fn record_failure(&self) {
         self.failure_count.fetch_add(1, Ordering::Relaxed);
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         self.last_failure.store(now, Ordering::Relaxed);
     }
 }
@@ -51,7 +57,10 @@ pub fn demo_circuit_breaker() {
 
     for i in 1..=8 {
         if cb.is_open() {
-            println!("    Request #{}: ⚡ CIRCUIT OPEN — skipped (returning 503)", i);
+            println!(
+                "    Request #{}: ⚡ CIRCUIT OPEN — skipped (returning 503)",
+                i
+            );
             continue;
         }
 
@@ -63,9 +72,16 @@ pub fn demo_circuit_breaker() {
             _ => {
                 cb.record_failure();
                 let failures = cb.failure_count.load(Ordering::Relaxed);
-                println!("    Request #{}: ✗ Failure (failures: {}/{}{})",
-                    i, failures, cb.threshold,
-                    if failures >= cb.threshold { " → CIRCUIT OPENS!" } else { "" }
+                println!(
+                    "    Request #{}: ✗ Failure (failures: {}/{}{})",
+                    i,
+                    failures,
+                    cb.threshold,
+                    if failures >= cb.threshold {
+                        " → CIRCUIT OPENS!"
+                    } else {
+                        ""
+                    }
                 );
             }
         }

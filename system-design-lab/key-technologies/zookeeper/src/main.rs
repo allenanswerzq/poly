@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # ZooKeeper Concepts: Leader Election & Distributed Locks
 //!
 //! Demonstrates core ZooKeeper patterns:
@@ -7,7 +8,7 @@
 //! - Watch mechanism
 
 use parking_lot::{Mutex, RwLock};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -21,8 +22,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub enum ZNodeType {
     Persistent,
-    Ephemeral,        // Deleted when session ends
-    Sequence,         // Has monotonically increasing suffix
+    Ephemeral, // Deleted when session ends
+    Sequence,  // Has monotonically increasing suffix
     EphemeralSequence,
 }
 
@@ -71,14 +72,23 @@ impl MiniZooKeeper {
         // Create root node
         {
             let mut nodes = zk.nodes.write();
-            nodes.insert("/".to_string(), ZNode::new("/", vec![], ZNodeType::Persistent, None));
+            nodes.insert(
+                "/".to_string(),
+                ZNode::new("/", vec![], ZNodeType::Persistent, None),
+            );
         }
 
         zk
     }
 
     /// Create a ZNode
-    pub fn create(&self, path: &str, data: Vec<u8>, node_type: ZNodeType, session: Option<String>) -> Result<String, &'static str> {
+    pub fn create(
+        &self,
+        path: &str,
+        data: Vec<u8>,
+        node_type: ZNodeType,
+        session: Option<String>,
+    ) -> Result<String, &'static str> {
         let mut nodes = self.nodes.write();
 
         // Handle sequence nodes
@@ -96,7 +106,8 @@ impl MiniZooKeeper {
         }
 
         // Get parent path
-        let parent_path = actual_path.rsplit_once('/')
+        let parent_path = actual_path
+            .rsplit_once('/')
             .map(|(p, _)| if p.is_empty() { "/" } else { p })
             .unwrap_or("/");
 
@@ -158,7 +169,8 @@ impl MiniZooKeeper {
         }
 
         // Remove from parent
-        let parent_path = path.rsplit_once('/')
+        let parent_path = path
+            .rsplit_once('/')
             .map(|(p, _)| if p.is_empty() { "/" } else { p })
             .unwrap_or("/");
 
@@ -176,7 +188,8 @@ impl MiniZooKeeper {
 
     /// Get children of a ZNode
     pub fn get_children(&self, path: &str) -> Option<Vec<String>> {
-        self.nodes.read()
+        self.nodes
+            .read()
             .get(path)
             .map(|n| n.children.iter().cloned().collect())
     }
@@ -218,7 +231,10 @@ impl MiniZooKeeper {
 
         for path in to_delete {
             nodes.remove(&path);
-            println!("[ZK] Cleaned up ephemeral node: {} (session: {})", path, session_id);
+            println!(
+                "[ZK] Cleaned up ephemeral node: {} (session: {})",
+                path, session_id
+            );
         }
     }
 }
@@ -245,7 +261,8 @@ impl LeaderElection {
     pub fn new(zk: Arc<MiniZooKeeper>, election_path: &str) -> Self {
         // Ensure election path exists
         if !zk.exists(election_path) {
-            zk.create(election_path, vec![], ZNodeType::Persistent, None).ok();
+            zk.create(election_path, vec![], ZNodeType::Persistent, None)
+                .ok();
         }
 
         Self {
@@ -279,7 +296,10 @@ impl LeaderElection {
         }
 
         let my_node = my_node.as_ref().unwrap();
-        let children = self.zk.get_children(&self.election_path).unwrap_or_default();
+        let children = self
+            .zk
+            .get_children(&self.election_path)
+            .unwrap_or_default();
 
         if children.is_empty() {
             return false;
@@ -323,7 +343,8 @@ impl DistributedLock {
     pub fn new(zk: Arc<MiniZooKeeper>, lock_path: &str) -> Self {
         // Ensure lock path exists
         if !zk.exists(lock_path) {
-            zk.create(lock_path, vec![], ZNodeType::Persistent, None).ok();
+            zk.create(lock_path, vec![], ZNodeType::Persistent, None)
+                .ok();
         }
 
         Self {
@@ -353,7 +374,7 @@ impl DistributedLock {
 
             let my_name = created.rsplit('/').next().unwrap_or(&created);
             if sorted.first().map(|s| s.as_str()) == Some(my_name) {
-                return true;  // Got the lock
+                return true; // Got the lock
             }
 
             // Didn't get the lock, clean up
@@ -366,7 +387,8 @@ impl DistributedLock {
 
     /// Acquire lock (blocking with retry)
     pub fn lock(&self) -> bool {
-        for _ in 0..100 {  // Max 100 retries
+        for _ in 0..100 {
+            // Max 100 retries
             if self.try_lock() {
                 return true;
             }
@@ -417,16 +439,29 @@ fn main() {
     // Demo 1: Basic ZNode operations
     println!("\n  ═══ Basic ZNode Operations ═══");
 
-    zk.create("/myapp", vec![], ZNodeType::Persistent, None).ok();
-    zk.create("/myapp/config", b"version=1.0".to_vec(), ZNodeType::Persistent, None).ok();
+    zk.create("/myapp", vec![], ZNodeType::Persistent, None)
+        .ok();
+    zk.create(
+        "/myapp/config",
+        b"version=1.0".to_vec(),
+        ZNodeType::Persistent,
+        None,
+    )
+    .ok();
 
     println!("Created /myapp and /myapp/config");
-    println!("GET /myapp/config = {:?}",
-             zk.get_data("/myapp/config").map(|d| String::from_utf8_lossy(&d).to_string()));
+    println!(
+        "GET /myapp/config = {:?}",
+        zk.get_data("/myapp/config")
+            .map(|d| String::from_utf8_lossy(&d).to_string())
+    );
 
     zk.set_data("/myapp/config", b"version=2.0".to_vec()).ok();
-    println!("After update = {:?}",
-             zk.get_data("/myapp/config").map(|d| String::from_utf8_lossy(&d).to_string()));
+    println!(
+        "After update = {:?}",
+        zk.get_data("/myapp/config")
+            .map(|d| String::from_utf8_lossy(&d).to_string())
+    );
 
     println!("Children of /myapp: {:?}", zk.get_children("/myapp"));
 
@@ -479,22 +514,36 @@ fn main() {
     // Demo 4: Service Discovery
     println!("\n--- Service Discovery ---");
 
-    zk.create("/services", vec![], ZNodeType::Persistent, None).ok();
-    zk.create("/services/api", vec![], ZNodeType::Persistent, None).ok();
+    zk.create("/services", vec![], ZNodeType::Persistent, None)
+        .ok();
+    zk.create("/services/api", vec![], ZNodeType::Persistent, None)
+        .ok();
 
     // Services register themselves (ephemeral nodes)
     let session1 = "server-1-session";
     let session2 = "server-2-session";
 
-    zk.create("/services/api/server-1", b"10.0.0.1:8080".to_vec(),
-              ZNodeType::Ephemeral, Some(session1.to_string())).ok();
-    zk.create("/services/api/server-2", b"10.0.0.2:8080".to_vec(),
-              ZNodeType::Ephemeral, Some(session2.to_string())).ok();
+    zk.create(
+        "/services/api/server-1",
+        b"10.0.0.1:8080".to_vec(),
+        ZNodeType::Ephemeral,
+        Some(session1.to_string()),
+    )
+    .ok();
+    zk.create(
+        "/services/api/server-2",
+        b"10.0.0.2:8080".to_vec(),
+        ZNodeType::Ephemeral,
+        Some(session2.to_string()),
+    )
+    .ok();
 
     println!("Registered services:");
     for child in zk.get_children("/services/api").unwrap_or_default() {
         let path = format!("/services/api/{}", child);
-        let addr = zk.get_data(&path).map(|d| String::from_utf8_lossy(&d).to_string());
+        let addr = zk
+            .get_data(&path)
+            .map(|d| String::from_utf8_lossy(&d).to_string());
         println!("  {} -> {:?}", child, addr);
     }
 
@@ -509,7 +558,8 @@ fn main() {
 
     // Demo 5: Use cases summary
     println!("\n--- ZooKeeper Use Cases ---");
-    println!("
+    println!(
+        "
 1. Leader Election
    - Only one master at a time
    - Automatic failover on master failure
@@ -531,7 +581,8 @@ fn main() {
 5. Group Membership
    - Track cluster members
    - Detect failures via ephemeral nodes
-");
+"
+    );
 
     println!("\n=== Demo Complete ===");
 }
@@ -544,7 +595,8 @@ mod tests {
     fn test_znode_create_get() {
         let zk = MiniZooKeeper::new();
 
-        zk.create("/test", b"hello".to_vec(), ZNodeType::Persistent, None).unwrap();
+        zk.create("/test", b"hello".to_vec(), ZNodeType::Persistent, None)
+            .unwrap();
         assert_eq!(zk.get_data("/test"), Some(b"hello".to_vec()));
     }
 

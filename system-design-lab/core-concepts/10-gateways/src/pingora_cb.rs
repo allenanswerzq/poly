@@ -1,10 +1,10 @@
 use axum::http::StatusCode;
 use axum::response::Json;
+use bytes::Bytes;
+use pingora::http::ResponseHeader;
 use pingora::prelude::*;
 use pingora::proxy::{ProxyHttp, Session};
 use pingora::upstreams::peer::HttpPeer;
-use pingora::http::ResponseHeader;
-use bytes::Bytes;
 use serde_json::json;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -35,7 +35,10 @@ impl PingoraCircuitBreaker {
         if !self.is_open.load(Ordering::Relaxed) {
             return false;
         }
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let last = self.last_failure.load(Ordering::Relaxed);
         if now - last >= self.cooldown_secs {
             self.is_open.store(false, Ordering::Relaxed);
@@ -48,7 +51,10 @@ impl PingoraCircuitBreaker {
 
     fn record_failure(&self) {
         let count = self.failure_count.fetch_add(1, Ordering::Relaxed) + 1;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         self.last_failure.store(now, Ordering::Relaxed);
         if count >= self.threshold {
             self.is_open.store(true, Ordering::Relaxed);
@@ -69,11 +75,18 @@ pub fn demo_pingora_circuit_breaker() {
     thread::spawn(|| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let app = axum::Router::new()
-                .route("/data", axum::routing::get(|| async {
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "always down"})))
-                }));
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:9105").await.unwrap();
+            let app = axum::Router::new().route(
+                "/data",
+                axum::routing::get(|| async {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "always down"})),
+                    )
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:9105")
+                .await
+                .unwrap();
             axum::serve(listener, app).await.unwrap();
         });
     });
@@ -96,12 +109,15 @@ pub fn demo_pingora_circuit_breaker() {
             _ctx: &mut Self::CTX,
         ) -> Result<bool> {
             if self.cb.check_open() {
-                let body = b"{\"error\":\"circuit open\",\"message\":\"backend unavailable, try later\"}";
+                let body =
+                    b"{\"error\":\"circuit open\",\"message\":\"backend unavailable, try later\"}";
                 let mut resp = ResponseHeader::build(503, Some(2))?;
                 resp.insert_header("Content-Type", "application/json")?;
                 resp.insert_header("Content-Length", body.len().to_string())?;
                 session.write_response_header(Box::new(resp), false).await?;
-                session.write_response_body(Some(Bytes::from_static(body)), true).await?;
+                session
+                    .write_response_body(Some(Bytes::from_static(body)), true)
+                    .await?;
                 return Ok(true);
             }
             Ok(false)
@@ -174,9 +190,13 @@ pub fn demo_pingora_circuit_breaker() {
         match client.get("http://127.0.0.1:6190/data").send() {
             Ok(resp) => {
                 let status = resp.status();
-                let state = if status == 503 { "OPEN→503 (didn't hit backend)" }
-                    else if status.as_u16() >= 500 { "CLOSED→fail (backend returned 500)" }
-                    else { "CLOSED→ok" };
+                let state = if status == 503 {
+                    "OPEN→503 (didn't hit backend)"
+                } else if status.as_u16() >= 500 {
+                    "CLOSED→fail (backend returned 500)"
+                } else {
+                    "CLOSED→ok"
+                };
                 println!("    Req #{}: {} [{}]", i, status, state);
             }
             Err(e) => println!("    Req #{}: ERROR: {}", i, e),
@@ -194,9 +214,13 @@ pub fn demo_pingora_circuit_breaker() {
         match client.get("http://127.0.0.1:6190/data").send() {
             Ok(resp) => {
                 let status = resp.status();
-                let state = if is_open && status == 503 { "OPEN→503" }
-                    else if status.as_u16() >= 500 { "HALF-OPEN→fail (re-opens circuit)" }
-                    else { "HALF-OPEN→ok (circuit closes)" };
+                let state = if is_open && status == 503 {
+                    "OPEN→503"
+                } else if status.as_u16() >= 500 {
+                    "HALF-OPEN→fail (re-opens circuit)"
+                } else {
+                    "HALF-OPEN→ok (circuit closes)"
+                };
                 println!("    Req #{}: {} [{}]", i, status, state);
             }
             Err(e) => println!("    Req #{}: ERROR: {}", i, e),

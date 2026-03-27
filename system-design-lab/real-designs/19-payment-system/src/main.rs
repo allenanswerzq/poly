@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # Payment System - Mini Implementation
 //!
 //! Demonstrates:
@@ -12,7 +13,7 @@
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use thiserror::Error;
@@ -28,7 +29,7 @@ fn instant_now() -> Instant {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Account {
     id: String,
-    balance: i64, // In cents
+    balance: i64,         // In cents
     pending_balance: i64, // Held amount
     currency: String,
 }
@@ -56,8 +57,8 @@ struct Payment {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum PaymentStatus {
     Pending,
-    Authorized,   // Amount held
-    Captured,     // Money transferred
+    Authorized, // Amount held
+    Captured,   // Money transferred
     Failed,
     Cancelled,
     Refunded,
@@ -222,9 +223,7 @@ impl AccountService {
     }
 
     fn get_balance(&self, account_id: &str) -> Option<i64> {
-        self.accounts
-            .get(account_id)
-            .map(|a| a.read().balance)
+        self.accounts.get(account_id).map(|a| a.read().balance)
     }
 
     fn hold(&self, account_id: &str, amount: i64, payment_id: &str) -> Result<(), PaymentError> {
@@ -243,7 +242,13 @@ impl AccountService {
         account.pending_balance += amount;
 
         // Record ledger entry
-        self.record_ledger(account_id, payment_id, -amount, account.balance, LedgerEntryType::Hold);
+        self.record_ledger(
+            account_id,
+            payment_id,
+            -amount,
+            account.balance,
+            LedgerEntryType::Hold,
+        );
 
         Ok(())
     }
@@ -259,12 +264,24 @@ impl AccountService {
         account.pending_balance -= amount;
         account.balance += amount;
 
-        self.record_ledger(account_id, payment_id, amount, account.balance, LedgerEntryType::Release);
+        self.record_ledger(
+            account_id,
+            payment_id,
+            amount,
+            account.balance,
+            LedgerEntryType::Release,
+        );
 
         Ok(())
     }
 
-    fn capture(&self, from_account: &str, to_account: &str, amount: i64, payment_id: &str) -> Result<(), PaymentError> {
+    fn capture(
+        &self,
+        from_account: &str,
+        to_account: &str,
+        amount: i64,
+        payment_id: &str,
+    ) -> Result<(), PaymentError> {
         // Debit from source (already held)
         {
             let account_lock = self
@@ -275,7 +292,13 @@ impl AccountService {
             let mut account = account_lock.write();
             account.pending_balance -= amount;
 
-            self.record_ledger(from_account, payment_id, -amount, account.balance, LedgerEntryType::Debit);
+            self.record_ledger(
+                from_account,
+                payment_id,
+                -amount,
+                account.balance,
+                LedgerEntryType::Debit,
+            );
         }
 
         // Credit to destination
@@ -288,7 +311,13 @@ impl AccountService {
             let mut account = account_lock.write();
             account.balance += amount;
 
-            self.record_ledger(to_account, payment_id, amount, account.balance, LedgerEntryType::Credit);
+            self.record_ledger(
+                to_account,
+                payment_id,
+                amount,
+                account.balance,
+                LedgerEntryType::Credit,
+            );
         }
 
         Ok(())
@@ -303,7 +332,10 @@ impl AccountService {
         entry_type: LedgerEntryType,
     ) {
         let entry = Ledger {
-            id: format!("ledger_{}", self.ledger_counter.fetch_add(1, Ordering::SeqCst)),
+            id: format!(
+                "ledger_{}",
+                self.ledger_counter.fetch_add(1, Ordering::SeqCst)
+            ),
             account_id: account_id.to_string(),
             payment_id: payment_id.to_string(),
             amount,
@@ -350,10 +382,16 @@ impl PaymentService {
     }
 
     fn create_payment(&self, request: PaymentRequest) -> Result<Payment, PaymentError> {
-        let payment_id = format!("pay_{}", self.payment_counter.fetch_add(1, Ordering::SeqCst));
+        let payment_id = format!(
+            "pay_{}",
+            self.payment_counter.fetch_add(1, Ordering::SeqCst)
+        );
 
         // Check idempotency
-        if let Some(existing_id) = self.idempotency.get_or_create(&request.idempotency_key, &payment_id) {
+        if let Some(existing_id) = self
+            .idempotency
+            .get_or_create(&request.idempotency_key, &payment_id)
+        {
             // Return existing payment
             return self
                 .payments
@@ -363,7 +401,8 @@ impl PaymentService {
         }
 
         // Log to WAL
-        self.wal.append(&payment_id, WalAction::PaymentCreated(request.clone()));
+        self.wal
+            .append(&payment_id, WalAction::PaymentCreated(request.clone()));
 
         let payment = Payment {
             id: payment_id.clone(),
@@ -474,12 +513,21 @@ fn main() {
     // Create accounts
     println!("\n  ═══ Creating Accounts ═══");
     service.accounts.create_account("alice", 10000, "USD"); // $100.00
-    service.accounts.create_account("bob", 5000, "USD");    // $50.00
+    service.accounts.create_account("bob", 5000, "USD"); // $50.00
     service.accounts.create_account("merchant", 0, "USD");
 
-    println!("Alice: ${:.2}", service.accounts.get_balance("alice").unwrap() as f64 / 100.0);
-    println!("Bob: ${:.2}", service.accounts.get_balance("bob").unwrap() as f64 / 100.0);
-    println!("Merchant: ${:.2}", service.accounts.get_balance("merchant").unwrap() as f64 / 100.0);
+    println!(
+        "Alice: ${:.2}",
+        service.accounts.get_balance("alice").unwrap() as f64 / 100.0
+    );
+    println!(
+        "Bob: ${:.2}",
+        service.accounts.get_balance("bob").unwrap() as f64 / 100.0
+    );
+    println!(
+        "Merchant: ${:.2}",
+        service.accounts.get_balance("merchant").unwrap() as f64 / 100.0
+    );
     println!();
 
     // Process payment
@@ -501,8 +549,14 @@ fn main() {
     }
 
     println!("\nBalances after payment:");
-    println!("Alice: ${:.2}", service.accounts.get_balance("alice").unwrap() as f64 / 100.0);
-    println!("Merchant: ${:.2}", service.accounts.get_balance("merchant").unwrap() as f64 / 100.0);
+    println!(
+        "Alice: ${:.2}",
+        service.accounts.get_balance("alice").unwrap() as f64 / 100.0
+    );
+    println!(
+        "Merchant: ${:.2}",
+        service.accounts.get_balance("merchant").unwrap() as f64 / 100.0
+    );
     println!();
 
     // Idempotency test
@@ -531,12 +585,18 @@ fn main() {
 
     let payment = service.authorize(&payment.id).unwrap();
     println!("Authorized - Bob's held funds: {}", payment.status as u8);
-    println!("Bob available: ${:.2}", service.accounts.get_balance("bob").unwrap() as f64 / 100.0);
+    println!(
+        "Bob available: ${:.2}",
+        service.accounts.get_balance("bob").unwrap() as f64 / 100.0
+    );
 
     // Cancel instead of capture
     let payment = service.cancel(&payment.id).unwrap();
     println!("Cancelled - funds released");
-    println!("Bob available: ${:.2}", service.accounts.get_balance("bob").unwrap() as f64 / 100.0);
+    println!(
+        "Bob available: ${:.2}",
+        service.accounts.get_balance("bob").unwrap() as f64 / 100.0
+    );
     println!();
 
     // Insufficient balance

@@ -13,16 +13,16 @@
 //!   7. Cache Warming (pipeline pre-load)
 //!   8. Hot Key + L1 local cache
 
-mod redis_server;
-mod store;
 mod cache_aside;
-mod write_through;
-mod write_behind;
 mod eviction;
-mod stampede;
-mod penetration;
-mod warming;
 mod hot_key;
+mod penetration;
+mod redis_server;
+mod stampede;
+mod store;
+mod warming;
+mod write_behind;
+mod write_through;
 
 fn main() {
     println!("╔══════════════════════════════════════════════════╗");

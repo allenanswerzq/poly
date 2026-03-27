@@ -40,18 +40,28 @@ pub fn start_backend_services() {
         let counter = Arc::new(AtomicU32::new(0));
         rt.block_on(async {
             let counter = counter.clone();
-            let app = axum::Router::new()
-                .route("/data", axum::routing::get(move || {
+            let app = axum::Router::new().route(
+                "/data",
+                axum::routing::get(move || {
                     let count = counter.fetch_add(1, Ordering::Relaxed);
                     async move {
-                        if count % 2 == 0 {
-                            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "service down"})))
+                        if count.is_multiple_of(2) {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({"error": "service down"})),
+                            )
                         } else {
-                            (StatusCode::OK, Json(json!({"service": "flaky-service", "data": "success"})))
+                            (
+                                StatusCode::OK,
+                                Json(json!({"service": "flaky-service", "data": "success"})),
+                            )
                         }
                     }
-                }));
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:9103").await.unwrap();
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:9103")
+                .await
+                .unwrap();
             axum::serve(listener, app).await.unwrap();
         });
     });

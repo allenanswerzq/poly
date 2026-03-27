@@ -41,8 +41,12 @@ pub fn demo() {
         let txn = db.begin_write().unwrap();
         {
             let mut table = txn.open_table(SESSIONS).unwrap();
-            table.insert("session:abc123", r#"{"user_id":42,"role":"admin"}"#).unwrap();
-            table.insert("session:def456", r#"{"user_id":7,"role":"user"}"#).unwrap();
+            table
+                .insert("session:abc123", r#"{"user_id":42,"role":"admin"}"#)
+                .unwrap();
+            table
+                .insert("session:def456", r#"{"user_id":7,"role":"user"}"#)
+                .unwrap();
         }
         txn.commit().unwrap();
     }
@@ -71,8 +75,11 @@ pub fn demo() {
         let txn = db.begin_write().unwrap();
         {
             let mut table = txn.open_table(COUNTERS).unwrap();
-            let current = table.get("likes:post:789").unwrap()
-                .map(|v| v.value()).unwrap_or(0);
+            let current = table
+                .get("likes:post:789")
+                .unwrap()
+                .map(|v| v.value())
+                .unwrap_or(0);
             table.insert("likes:post:789", &(current + 1)).unwrap();
         }
         txn.commit().unwrap();
@@ -111,7 +118,10 @@ pub fn demo() {
         let val = table.get("key:5000").unwrap().unwrap();
         let _ = val.value(); // read the value
     }
-    println!("    Lookup key:5000 → {:?} (B-tree lookup)", start.elapsed());
+    println!(
+        "    Lookup key:5000 → {:?} (B-tree lookup)",
+        start.elapsed()
+    );
 
     // ── Use case 4: Range scan ──
     println!("\n    Use case 4: Range scan (keys 100..110)\n");

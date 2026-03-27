@@ -42,9 +42,7 @@ impl CacheWarmer {
     /// Warm cache with pipeline — 1 round-trip for ALL keys (fast)
     fn warm_pipeline(&self, keys: &[(String, String)], ttl: u64) -> u128 {
         self.store.cache.flush();
-        let batch: Vec<(&str, &str)> = keys.iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
+        let batch: Vec<(&str, &str)> = keys.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let start = Instant::now();
         self.store.cache.set_batch(&batch, ttl);
         start.elapsed().as_micros()
@@ -61,7 +59,12 @@ pub fn demo() {
     let mut entries: Vec<(String, String)> = Vec::new();
     for i in 0..100 {
         let key = format!("product:{}", i);
-        let val = format!(r#"{{"id":{},"name":"Product {}","price":{:.2}}}"#, i, i, i as f64 * 1.5);
+        let val = format!(
+            r#"{{"id":{},"name":"Product {}","price":{:.2}}}"#,
+            i,
+            i,
+            i as f64 * 1.5
+        );
         store.db.set(&key, &val);
         entries.push((key, val));
     }
@@ -73,10 +76,17 @@ pub fn demo() {
     let pipeline_us = warmer.warm_pipeline(&entries, 300);
     println!("    Pipeline  SET × 100: {}µs", pipeline_us);
 
-    let speedup = if pipeline_us > 0 { individual_us / pipeline_us } else { 0 };
+    let speedup = if pipeline_us > 0 {
+        individual_us / pipeline_us
+    } else {
+        0
+    };
     println!("    Pipeline is ~{}x faster (1 RTT vs 100)\n", speedup);
 
     // Verify a sample
     println!("    Verify: product:0 → {:?}", store.cache.get("product:0"));
-    println!("    Verify: product:99 → {:?}\n", store.cache.get("product:99"));
+    println!(
+        "    Verify: product:99 → {:?}\n",
+        store.cache.get("product:99")
+    );
 }

@@ -1,7 +1,6 @@
 use redis::Commands;
 use rusqlite::Connection as SqliteConn;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 // =============================================================================
 // Clean wrappers over Redis + SQLite
@@ -23,7 +22,9 @@ pub struct Cache {
 
 impl Cache {
     pub fn new(conn: redis::Connection) -> Self {
-        Self { conn: Mutex::new(conn) }
+        Self {
+            conn: Mutex::new(conn),
+        }
     }
 
     /// SET key value EX ttl_secs
@@ -50,12 +51,6 @@ impl Cache {
         let _: Result<(), _> = r.del(key);
     }
 
-    /// INCR key → new value
-    pub fn incr(&self, key: &str) -> i64 {
-        let mut r = self.conn.lock().unwrap();
-        r.incr(key, 1).unwrap_or(0)
-    }
-
     /// TTL key → seconds remaining (-1 = no TTL, -2 = key doesn't exist)
     pub fn ttl(&self, key: &str) -> i64 {
         let mut r = self.conn.lock().unwrap();
@@ -66,7 +61,11 @@ impl Cache {
     pub fn try_lock(&self, key: &str, ttl_secs: u64) -> bool {
         let mut r = self.conn.lock().unwrap();
         redis::cmd("SET")
-            .arg(key).arg("1").arg("NX").arg("EX").arg(ttl_secs)
+            .arg(key)
+            .arg("1")
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl_secs)
             .query(&mut *r)
             .unwrap_or(false)
     }
@@ -99,16 +98,13 @@ impl Cache {
         let _: Result<(), _> = redis::cmd("PERSIST").arg(key).query(&mut *r);
     }
 
-    /// SADD set_key member — add to a Redis SET
-    pub fn sadd(&self, set_key: &str, member: &str) {
-        let mut r = self.conn.lock().unwrap();
-        let _: Result<(), _> = redis::cmd("SADD").arg(set_key).arg(member).query(&mut *r);
-    }
-
     /// SMEMBERS set_key — get all members of a Redis SET
     pub fn smembers(&self, set_key: &str) -> Vec<String> {
         let mut r = self.conn.lock().unwrap();
-        redis::cmd("SMEMBERS").arg(set_key).query(&mut *r).unwrap_or_default()
+        redis::cmd("SMEMBERS")
+            .arg(set_key)
+            .query(&mut *r)
+            .unwrap_or_default()
     }
 
     /// SCARD set_key — number of members in a Redis SET
@@ -122,17 +118,22 @@ impl Cache {
     pub fn set_and_sadd(&self, key: &str, value: &str, ttl_secs: u64, set_key: &str) {
         let mut r = self.conn.lock().unwrap();
         let mut pipe = redis::pipe();
-        pipe.atomic()                          // MULTI/EXEC — all or nothing
+        pipe.atomic() // MULTI/EXEC — all or nothing
             .set_ex(key, value, ttl_secs)
-            .cmd("SADD").arg(set_key).arg(key);
+            .cmd("SADD")
+            .arg(set_key)
+            .arg(key);
         let _: Result<(), _> = pipe.query(&mut *r);
     }
 
     /// RENAME old_key new_key — atomic rename. Fails silently if old_key missing.
     pub fn rename(&self, old_key: &str, new_key: &str) -> bool {
         let mut r = self.conn.lock().unwrap();
-        redis::cmd("RENAME").arg(old_key).arg(new_key)
-            .query::<String>(&mut *r).is_ok()
+        redis::cmd("RENAME")
+            .arg(old_key)
+            .arg(new_key)
+            .query::<String>(&mut *r)
+            .is_ok()
     }
 }
 
@@ -144,11 +145,16 @@ pub struct Db {
 impl Db {
     pub fn new() -> Self {
         let conn = SqliteConn::open_in_memory().unwrap();
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        ").unwrap();
-        Self { conn: Mutex::new(conn) }
+        ",
+        )
+        .unwrap();
+        Self {
+            conn: Mutex::new(conn),
+        }
     }
 
     /// UPSERT: insert or update
@@ -157,13 +163,15 @@ impl Db {
         db.execute(
             "INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
             rusqlite::params![key, value],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     /// SELECT value WHERE key = ?
     pub fn get(&self, key: &str) -> Option<String> {
         let db = self.conn.lock().unwrap();
-        db.query_row("SELECT value FROM kv WHERE key = ?1", [key], |r| r.get(0)).ok()
+        db.query_row("SELECT value FROM kv WHERE key = ?1", [key], |r| r.get(0))
+            .ok()
     }
 
     /// DELETE WHERE key = ?
@@ -175,10 +183,12 @@ impl Db {
     /// COUNT(*)
     pub fn count(&self) -> i64 {
         let db = self.conn.lock().unwrap();
-        db.query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0)).unwrap_or(0)
+        db.query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0))
+            .unwrap_or(0)
     }
 
     /// Batch insert in a transaction
+    #[allow(dead_code)]
     pub fn set_batch(&self, entries: &[(&str, &str)]) {
         let db = self.conn.lock().unwrap();
         db.execute_batch("BEGIN").unwrap();
@@ -192,15 +202,18 @@ impl Db {
     }
 
     /// Execute raw SQL
+    #[allow(dead_code)]
     pub fn exec(&self, sql: &str) {
         let db = self.conn.lock().unwrap();
         db.execute_batch(sql).unwrap();
     }
 
     /// Query a single string value
+    #[allow(dead_code)]
     pub fn query_one(&self, sql: &str, params: &[&str]) -> Option<String> {
         let db = self.conn.lock().unwrap();
-        let params: Vec<&dyn rusqlite::types::ToSql> = params.iter()
+        let params: Vec<&dyn rusqlite::types::ToSql> = params
+            .iter()
             .map(|s| s as &dyn rusqlite::types::ToSql)
             .collect();
         db.query_row(sql, params.as_slice(), |r| r.get(0)).ok()
@@ -219,7 +232,11 @@ impl Store {
         let server = crate::redis_server::RedisServer::start();
         let cache = Arc::new(Cache::new(server.connect()));
         let db = Arc::new(Db::new());
-        Self { cache, db, _server: server }
+        Self {
+            cache,
+            db,
+            _server: server,
+        }
     }
 
     /// Get a new Redis connection to the same server (for multi-threaded use)

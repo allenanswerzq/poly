@@ -1,10 +1,10 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 // =============================================================================
 // Demonstration
 // =============================================================================
 
 use mini_redis::MiniRedis;
 use std::time::Duration;
-use std::thread;
 
 fn main() {
     println!("=== Mini Redis Demo ===\n");
@@ -60,7 +60,7 @@ fn main() {
     redis.sadd("tags", "rust");
     redis.sadd("tags", "redis");
     redis.sadd("tags", "cache");
-    redis.sadd("tags", "rust");  // Duplicate, won't be added
+    redis.sadd("tags", "rust"); // Duplicate, won't be added
     println!("SADD tags rust redis cache rust");
     println!("SMEMBERS tags: {:?}", redis.smembers("tags"));
 
@@ -109,10 +109,10 @@ fn main() {
         user_data
     }
 
-    get_user(&redis, 100);  // Miss
-    get_user(&redis, 100);  // Hit
-    get_user(&redis, 200);  // Miss
-    get_user(&redis, 100);  // Hit
+    get_user(&redis, 100); // Miss
+    get_user(&redis, 100); // Hit
+    get_user(&redis, 200); // Miss
+    get_user(&redis, 100); // Hit
 
     println!("\n=== Demo Complete ===");
 }

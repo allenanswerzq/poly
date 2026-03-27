@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Top-K / Trending System (YouTube Top K) - Mini Implementation
 //!
 //! Demonstrates:
@@ -241,14 +242,14 @@ impl TimeWindow {
 // =============================================================================
 
 struct TrendingWithVelocity {
-    recent: TimeWindow, // Last 5 minutes
+    recent: TimeWindow,   // Last 5 minutes
     baseline: TimeWindow, // Last 1 hour
 }
 
 impl TrendingWithVelocity {
     fn new() -> Self {
         Self {
-            recent: TimeWindow::new(Duration::from_secs(300), 30),   // 5 min, 10s buckets
+            recent: TimeWindow::new(Duration::from_secs(300), 30), // 5 min, 10s buckets
             baseline: TimeWindow::new(Duration::from_secs(3600), 60), // 1 hour, 1 min buckets
         }
     }

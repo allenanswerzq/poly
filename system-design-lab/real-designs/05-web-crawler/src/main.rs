@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Web Crawler - Mini Implementation
 //!
 //! A distributed web crawler demonstrating:
@@ -12,11 +13,10 @@
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 // =============================================================================
@@ -151,11 +151,12 @@ struct BloomFilter {
 impl BloomFilter {
     fn new(expected_items: usize, false_positive_rate: f64) -> Self {
         // Calculate optimal size
-        let num_bits = (-(expected_items as f64 * false_positive_rate.ln()) / (2.0_f64.ln().powi(2)))
-            .ceil() as usize;
+        let num_bits = (-(expected_items as f64 * false_positive_rate.ln())
+            / (2.0_f64.ln().powi(2)))
+        .ceil() as usize;
         let num_hashes = ((num_bits as f64 / expected_items as f64) * 2.0_f64.ln()).ceil() as usize;
 
-        let num_words = (num_bits + 63) / 64;
+        let num_words = num_bits.div_ceil(64);
         let bits = (0..num_words).map(|_| AtomicU64::new(0)).collect();
 
         Self {
@@ -469,7 +470,9 @@ async fn main() {
     // Add robots.txt rules
     crawler.robots.add_rule("example.com", "/private/");
     crawler.robots.add_rule("example.com", "/admin/");
-    crawler.robots.set_crawl_delay("example.com", Duration::from_millis(50));
+    crawler
+        .robots
+        .set_crawl_delay("example.com", Duration::from_millis(50));
 
     // Add seed URLs
     println!("Adding seed URLs...");

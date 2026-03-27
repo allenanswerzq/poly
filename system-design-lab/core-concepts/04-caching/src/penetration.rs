@@ -33,7 +33,11 @@ struct NegativeCache {
 
 impl NegativeCache {
     fn new(store: Arc<Store>) -> Self {
-        Self { store, null_marker: "\x00NULL", db_hits: AtomicI32::new(0) }
+        Self {
+            store,
+            null_marker: "\x00NULL",
+            db_hits: AtomicI32::new(0),
+        }
     }
 
     /// Read with negative caching: cache miss + DB miss → cache the absence
@@ -41,7 +45,7 @@ impl NegativeCache {
         // 1. Check cache
         if let Some(val) = self.store.cache.get(key) {
             if val == self.null_marker {
-                return None;                   // cached negative → skip DB
+                return None; // cached negative → skip DB
             }
             return Some(val);
         }
@@ -49,18 +53,22 @@ impl NegativeCache {
         self.db_hits.fetch_add(1, Ordering::Relaxed);
         match self.store.db.get(key) {
             Some(val) => {
-                self.store.cache.set(key, &val, 60);              // normal cache
+                self.store.cache.set(key, &val, 60); // normal cache
                 Some(val)
             }
             None => {
-                self.store.cache.set(key, self.null_marker, 30);  // negative cache (short TTL)
+                self.store.cache.set(key, self.null_marker, 30); // negative cache (short TTL)
                 None
             }
         }
     }
 
-    fn reset_hits(&self) { self.db_hits.store(0, Ordering::Relaxed); }
-    fn hits(&self) -> i32 { self.db_hits.load(Ordering::Relaxed) }
+    fn reset_hits(&self) {
+        self.db_hits.store(0, Ordering::Relaxed);
+    }
+    fn hits(&self) -> i32 {
+        self.db_hits.load(Ordering::Relaxed)
+    }
 }
 
 pub fn demo() {
@@ -78,7 +86,7 @@ pub fn demo() {
     println!("    Without negative caching:");
     let mut raw_hits = 0;
     for _ in 0..100 {
-        let _ = store.db.get("user:999");      // always misses, always queries
+        let _ = store.db.get("user:999"); // always misses, always queries
         raw_hits += 1;
     }
     println!("      100 lookups for missing key → {} DB hits\n", raw_hits);
@@ -90,13 +98,26 @@ pub fn demo() {
     for _ in 0..100 {
         let _ = nc.get("user:999");
     }
-    println!("      100 lookups for missing key → {} DB hit(s)", nc.hits());
-    println!("      Cached as {:?} (30s TTL)\n",
-        store.cache.get("user:999").map(|v| if v == "\x00NULL" { "NULL marker".to_string() } else { v }));
+    println!(
+        "      100 lookups for missing key → {} DB hit(s)",
+        nc.hits()
+    );
+    println!(
+        "      Cached as {:?} (30s TTL)\n",
+        store.cache.get("user:999").map(|v| if v == "\x00NULL" {
+            "NULL marker".to_string()
+        } else {
+            v
+        })
+    );
 
     // ── Normal keys still work ──
 
     nc.reset_hits();
     let val = nc.get("user:1");
-    println!("    Existing key: user:1 → {:?} (DB hits: {})\n", val, nc.hits());
+    println!(
+        "    Existing key: user:1 → {:?} (DB hits: {})\n",
+        val,
+        nc.hits()
+    );
 }

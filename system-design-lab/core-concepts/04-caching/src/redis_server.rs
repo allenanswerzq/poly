@@ -1,8 +1,8 @@
-use redis::{Client, Commands, Connection};
+use redis::{Client, Connection};
 use std::process::{Child, Command};
 use std::sync::Mutex;
-use std::time::Duration;
 use std::thread;
+use std::time::Duration;
 
 // =============================================================================
 // Redis Server Manager
@@ -26,6 +26,7 @@ pub struct RedisServer {
 
 impl RedisServer {
     /// Start a Redis server. Uses the binary compiled by build.rs.
+    #[allow(clippy::zombie_processes)] // process is moved into struct with Drop that kills it
     pub fn start() -> Self {
         let redis_bin = env!("REDIS_SERVER_PATH");
 
@@ -37,33 +38,43 @@ impl RedisServer {
             p
         };
 
-        let process = Command::new(redis_bin)
+        let mut process = Command::new(redis_bin)
             .args([
-                "--port", &port.to_string(),
-                "--daemonize", "no",         // run in foreground (we manage lifecycle)
-                "--loglevel", "warning",     // quiet
-                "--save", "",                // no disk persistence
-                "--appendonly", "no",        // no AOF
-                "--maxmemory", "50mb",       // limit memory for demo
+                "--port",
+                &port.to_string(),
+                "--daemonize",
+                "no", // run in foreground (we manage lifecycle)
+                "--loglevel",
+                "warning", // quiet
+                "--save",
+                "", // no disk persistence
+                "--appendonly",
+                "no", // no AOF
+                "--maxmemory",
+                "50mb", // limit memory for demo
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .expect(&format!("failed to start redis-server at {}", redis_bin));
+            .unwrap_or_else(|_| panic!("failed to start redis-server at {}", redis_bin));
 
         // Wait for Redis to be ready
         let url = format!("redis://127.0.0.1:{}/", port);
-        for attempt in 0..50 {
+        for _attempt in 0..50 {
             thread::sleep(Duration::from_millis(50));
             if let Ok(client) = Client::open(url.as_str()) {
                 if let Ok(mut conn) = client.get_connection() {
                     let pong: Result<String, _> = redis::cmd("PING").query(&mut conn);
                     if pong.is_ok() {
-                        return Self { process: Some(process), port };
+                        return Self {
+                            process: Some(process),
+                            port,
+                        };
                     }
                 }
             }
         }
+        let _ = process.kill();
         panic!("Redis failed to start on port {} within 2.5 seconds", port);
     }
 
@@ -83,9 +94,7 @@ impl RedisServer {
 impl Drop for RedisServer {
     fn drop(&mut self) {
         // Shut down Redis cleanly
-        if let Ok(mut conn) = Client::open(self.url().as_str())
-            .and_then(|c| c.get_connection())
-        {
+        if let Ok(mut conn) = Client::open(self.url().as_str()).and_then(|c| c.get_connection()) {
             let _: Result<(), _> = redis::cmd("SHUTDOWN").arg("NOSAVE").query(&mut conn);
         }
         // Kill process if SHUTDOWN didn't work

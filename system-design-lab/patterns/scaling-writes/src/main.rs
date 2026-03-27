@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # Scaling Writes Pattern Demos
 //!
 //! This module demonstrates common patterns for scaling write-heavy workloads:
@@ -8,7 +9,6 @@
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use rand::Rng;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -426,17 +426,17 @@ fn main() {
 
     // Compact
     let after_compact = wal.compact();
-    println!("After compaction: {} entries (was {})", after_compact, log_size);
+    println!(
+        "After compaction: {} entries (was {})",
+        after_compact, log_size
+    );
 
     // Simulate crash recovery
     let recovered = wal.replay();
     println!("Recovered {} entries from WAL", recovered);
 
     // Verify data
-    println!(
-        "Read wal_key:25 = {:?}",
-        wal.read("wal_key:25")
-    );
+    println!("Read wal_key:25 = {:?}", wal.read("wal_key:25"));
 
     println!("\n=== Key Takeaways ===");
     println!("1. Sharding: Distribute writes across nodes (N nodes = Nx throughput)");

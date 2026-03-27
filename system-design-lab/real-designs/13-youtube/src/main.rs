@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # YouTube (Video Platform) - Mini Implementation
 //!
 //! Demonstrates:
@@ -10,12 +11,12 @@
 //! Run: cargo run -p youtube
 
 use dashmap::DashMap;
-use parking_lot::{Mutex, RwLock};
-use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet, VecDeque};
+use parking_lot::Mutex;
+use sha2::Digest;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // =============================================================================
 // Core Types
@@ -76,7 +77,7 @@ impl Resolution {
 // =============================================================================
 
 struct TranscodingPipeline {
-    queue: Mutex<VecDeque<String>>, // video_ids waiting to transcode
+    queue: Mutex<VecDeque<String>>,   // video_ids waiting to transcode
     in_progress: DashMap<String, u8>, // video_id -> progress %
 }
 
@@ -342,7 +343,13 @@ impl VideoService {
         }
     }
 
-    fn upload(&self, title: &str, description: &str, uploader_id: &str, duration_secs: u64) -> String {
+    fn upload(
+        &self,
+        title: &str,
+        description: &str,
+        uploader_id: &str,
+        duration_secs: u64,
+    ) -> String {
         let video_id = format!("vid_{}", self.video_counter.fetch_add(1, Ordering::SeqCst));
 
         let video = Video {
@@ -552,16 +559,19 @@ mod tests {
         let videos = Arc::new(DashMap::new());
         let pipeline = TranscodingPipeline::new();
 
-        videos.insert("v1".to_string(), Video {
-            id: "v1".to_string(),
-            title: "Test".to_string(),
-            description: "".to_string(),
-            uploader_id: "u1".to_string(),
-            duration_secs: 60,
-            upload_time: Instant::now(),
-            status: VideoStatus::Uploading,
-            transcoding_progress: 0,
-        });
+        videos.insert(
+            "v1".to_string(),
+            Video {
+                id: "v1".to_string(),
+                title: "Test".to_string(),
+                description: "".to_string(),
+                uploader_id: "u1".to_string(),
+                duration_secs: 60,
+                upload_time: Instant::now(),
+                status: VideoStatus::Uploading,
+                transcoding_progress: 0,
+            },
+        );
 
         pipeline.submit("v1");
         assert_eq!(pipeline.queue_length(), 1);

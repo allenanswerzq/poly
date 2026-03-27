@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Uber (Ride-Sharing) - Mini Implementation
 //!
 //! Demonstrates:
@@ -10,10 +11,7 @@
 //! Run: cargo run -p uber
 
 use dashmap::DashMap;
-use parking_lot::RwLock;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -64,8 +62,8 @@ struct Driver {
 enum DriverStatus {
     Offline,
     Available,
-    EnRoute,    // Going to pickup
-    OnTrip,     // Carrying passenger
+    EnRoute, // Going to pickup
+    OnTrip,  // Carrying passenger
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -126,7 +124,7 @@ enum RideStatus {
 // =============================================================================
 
 struct DriverIndex {
-    cells: DashMap<String, Vec<String>>, // cell_key -> driver_ids
+    cells: DashMap<String, Vec<String>>,   // cell_key -> driver_ids
     driver_cells: DashMap<String, String>, // driver_id -> cell_key
     drivers: DashMap<String, Driver>,
     cell_size: f64, // degrees
@@ -173,7 +171,12 @@ impl DriverIndex {
         self.drivers.insert(driver_id, driver);
     }
 
-    fn find_nearby_available(&self, location: &GeoPoint, radius_km: f64, limit: usize) -> Vec<Driver> {
+    fn find_nearby_available(
+        &self,
+        location: &GeoPoint,
+        radius_km: f64,
+        limit: usize,
+    ) -> Vec<Driver> {
         let center_lat = (location.lat / self.cell_size).floor() as i32;
         let center_lon = (location.lon / self.cell_size).floor() as i32;
         let cell_radius = (radius_km / (111.0 * self.cell_size)).ceil() as i32 + 1;
@@ -278,9 +281,18 @@ impl PricingEngine {
         duration_min: f64,
         surge: f64,
     ) -> f64 {
-        let base = self.base_fare.get(&vehicle_type).map(|v| *v).unwrap_or(2.50);
+        let base = self
+            .base_fare
+            .get(&vehicle_type)
+            .map(|v| *v)
+            .unwrap_or(2.50);
         let km_cost = self.per_km.get(&vehicle_type).map(|v| *v).unwrap_or(1.20) * distance_km;
-        let time_cost = self.per_minute.get(&vehicle_type).map(|v| *v).unwrap_or(0.20) * duration_min;
+        let time_cost = self
+            .per_minute
+            .get(&vehicle_type)
+            .map(|v| *v)
+            .unwrap_or(0.20)
+            * duration_min;
 
         (base + km_cost + time_cost) * surge
     }
@@ -332,7 +344,13 @@ impl RideService {
         }
     }
 
-    fn request_ride(&self, rider: &Rider, pickup: GeoPoint, dropoff: GeoPoint, vehicle_type: VehicleType) -> Ride {
+    fn request_ride(
+        &self,
+        rider: &Rider,
+        pickup: GeoPoint,
+        dropoff: GeoPoint,
+        vehicle_type: VehicleType,
+    ) -> Ride {
         let ride_id = format!("ride_{}", self.ride_counter.fetch_add(1, Ordering::SeqCst));
 
         let request = RideRequest {
@@ -361,7 +379,9 @@ impl RideService {
 
         let distance_km = pickup.distance_km(&dropoff);
         let duration_min = distance_km / 0.5; // Assume 30 km/h average
-        let price = self.pricing.estimate_price(vehicle_type, distance_km, duration_min, surge);
+        let price = self
+            .pricing
+            .estimate_price(vehicle_type, distance_km, duration_min, surge);
 
         let ride = Ride {
             id: ride_id.clone(),
@@ -417,19 +437,29 @@ impl RideService {
         Some(ride.clone())
     }
 
-    fn get_price_estimates(&self, pickup: GeoPoint, dropoff: GeoPoint) -> Vec<(VehicleType, f64, f64)> {
+    fn get_price_estimates(
+        &self,
+        pickup: GeoPoint,
+        dropoff: GeoPoint,
+    ) -> Vec<(VehicleType, f64, f64)> {
         let distance_km = pickup.distance_km(&dropoff);
         let duration_min = distance_km / 0.5;
         let cell_key = self.driver_index.cell_key(&pickup);
         let surge = self.pricing.calculate_surge(&cell_key);
 
-        vec![VehicleType::UberX, VehicleType::UberXL, VehicleType::UberBlack]
-            .into_iter()
-            .map(|vt| {
-                let price = self.pricing.estimate_price(vt, distance_km, duration_min, surge);
-                (vt, price, surge)
-            })
-            .collect()
+        vec![
+            VehicleType::UberX,
+            VehicleType::UberXL,
+            VehicleType::UberBlack,
+        ]
+        .into_iter()
+        .map(|vt| {
+            let price = self
+                .pricing
+                .estimate_price(vt, distance_km, duration_min, surge);
+            (vt, price, surge)
+        })
+        .collect()
     }
 }
 
@@ -448,7 +478,10 @@ fn main() {
         Driver {
             id: "d1".to_string(),
             name: "John".to_string(),
-            location: GeoPoint { lat: 40.7128, lon: -74.0060 },
+            location: GeoPoint {
+                lat: 40.7128,
+                lon: -74.0060,
+            },
             status: DriverStatus::Available,
             rating: 4.8,
             vehicle_type: VehicleType::UberX,
@@ -457,7 +490,10 @@ fn main() {
         Driver {
             id: "d2".to_string(),
             name: "Sarah".to_string(),
-            location: GeoPoint { lat: 40.7150, lon: -74.0080 },
+            location: GeoPoint {
+                lat: 40.7150,
+                lon: -74.0080,
+            },
             status: DriverStatus::Available,
             rating: 4.9,
             vehicle_type: VehicleType::UberXL,
@@ -466,7 +502,10 @@ fn main() {
         Driver {
             id: "d3".to_string(),
             name: "Mike".to_string(),
-            location: GeoPoint { lat: 40.7200, lon: -74.0100 },
+            location: GeoPoint {
+                lat: 40.7200,
+                lon: -74.0100,
+            },
             status: DriverStatus::OnTrip, // Already on a ride
             rating: 4.7,
             vehicle_type: VehicleType::UberBlack,
@@ -475,7 +514,10 @@ fn main() {
     ];
 
     for driver in drivers {
-        println!("Registered: {} ({:?}, ⭐{:.1})", driver.name, driver.vehicle_type, driver.rating);
+        println!(
+            "Registered: {} ({:?}, ⭐{:.1})",
+            driver.name, driver.vehicle_type, driver.rating
+        );
         service.register_driver(driver);
     }
     println!();
@@ -484,14 +526,23 @@ fn main() {
     let rider = Rider {
         id: "r1".to_string(),
         name: "Alice".to_string(),
-        location: GeoPoint { lat: 40.7135, lon: -74.0070 },
+        location: GeoPoint {
+            lat: 40.7135,
+            lon: -74.0070,
+        },
         rating: 4.9,
     };
 
     // Get price estimates
     println!("\n  ═══ Price Estimates ═══");
-    let pickup = GeoPoint { lat: 40.7135, lon: -74.0070 };
-    let dropoff = GeoPoint { lat: 40.7580, lon: -73.9855 }; // Times Square
+    let pickup = GeoPoint {
+        lat: 40.7135,
+        lon: -74.0070,
+    };
+    let dropoff = GeoPoint {
+        lat: 40.7580,
+        lon: -73.9855,
+    }; // Times Square
 
     let distance = pickup.distance_km(&dropoff);
     println!("Trip: {:.1} km\n", distance);
@@ -566,7 +617,10 @@ mod tests {
         index.update_driver(Driver {
             id: "d1".to_string(),
             name: "D1".to_string(),
-            location: GeoPoint { lat: 40.7128, lon: -74.0060 },
+            location: GeoPoint {
+                lat: 40.7128,
+                lon: -74.0060,
+            },
             status: DriverStatus::Available,
             rating: 4.5,
             vehicle_type: VehicleType::UberX,
@@ -574,7 +628,10 @@ mod tests {
         });
 
         let nearby = index.find_nearby_available(
-            &GeoPoint { lat: 40.7130, lon: -74.0062 },
+            &GeoPoint {
+                lat: 40.7130,
+                lon: -74.0062,
+            },
             1.0,
             10,
         );

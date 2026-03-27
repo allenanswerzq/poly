@@ -8,7 +8,9 @@ pub fn demo() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:9010").await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:9010")
+            .await
+            .unwrap();
         println!("  [WS Server] Listening on 127.0.0.1:9010");
 
         let server = tokio::spawn(async move {
@@ -28,11 +30,15 @@ pub fn demo() {
                         msg_count += 1;
                         println!("  [WS Server] Received #{}: \"{}\"", msg_count, text);
                         let echo = format!("echo: {}", text);
-                        futures::SinkExt::send(&mut write, Message::Text(echo.into())).await.unwrap();
+                        futures::SinkExt::send(&mut write, Message::Text(echo))
+                            .await
+                            .unwrap();
                     }
                     Message::Ping(data) => {
                         println!("  [WS Server] Ping received, sending Pong");
-                        futures::SinkExt::send(&mut write, Message::Pong(data)).await.unwrap();
+                        futures::SinkExt::send(&mut write, Message::Pong(data))
+                            .await
+                            .unwrap();
                     }
                     Message::Close(_) => {
                         println!("  [WS Server] Close frame received");
@@ -41,7 +47,10 @@ pub fn demo() {
                     _ => {}
                 }
             }
-            println!("  [WS Server] Connection closed ({} messages exchanged)", msg_count);
+            println!(
+                "  [WS Server] Connection closed ({} messages exchanged)",
+                msg_count
+            );
         });
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -54,8 +63,14 @@ pub fn demo() {
 
         println!("  [WS Client] Connected! Handshake: {:?}", handshake_time);
         println!("  [WS Client] HTTP response status: {}", response.status());
-        println!("  [WS Client] Upgrade: {}",
-            response.headers().get("upgrade").map(|v| v.to_str().unwrap_or("")).unwrap_or("none"));
+        println!(
+            "  [WS Client] Upgrade: {}",
+            response
+                .headers()
+                .get("upgrade")
+                .map(|v| v.to_str().unwrap_or(""))
+                .unwrap_or("none")
+        );
         println!("  [WS Client] Protocol is now WebSocket (HTTP is gone)\n");
 
         let (mut write, mut read) = futures::StreamExt::split(ws_stream);
@@ -64,21 +79,35 @@ pub fn demo() {
         let messages = ["Hello WebSocket!", "How are you?", "Real-time is cool"];
         for msg in &messages {
             let start = Instant::now();
-            futures::SinkExt::send(&mut write, Message::Text((*msg).into())).await.unwrap();
+            futures::SinkExt::send(&mut write, Message::Text((*msg).into()))
+                .await
+                .unwrap();
             if let Some(Ok(resp)) = futures::StreamExt::next(&mut read).await {
-                println!("  [WS Client] Sent: \"{}\" → Got: \"{}\" ({:?})",
-                    msg, resp.into_text().unwrap_or_default(), start.elapsed());
+                println!(
+                    "  [WS Client] Sent: \"{}\" → Got: \"{}\" ({:?})",
+                    msg,
+                    resp.into_text().unwrap_or_default(),
+                    start.elapsed()
+                );
             }
         }
 
         println!();
         let ping_start = Instant::now();
-        futures::SinkExt::send(&mut write, Message::Ping(vec![1, 2, 3, 4].into())).await.unwrap();
+        futures::SinkExt::send(&mut write, Message::Ping(vec![1, 2, 3, 4]))
+            .await
+            .unwrap();
         if let Some(Ok(pong)) = futures::StreamExt::next(&mut read).await {
-            println!("  [WS Client] Ping → {:?} ({:?})", pong, ping_start.elapsed());
+            println!(
+                "  [WS Client] Ping → {:?} ({:?})",
+                pong,
+                ping_start.elapsed()
+            );
         }
 
-        futures::SinkExt::send(&mut write, Message::Close(None)).await.unwrap();
+        futures::SinkExt::send(&mut write, Message::Close(None))
+            .await
+            .unwrap();
         println!("  [WS Client] Sent Close frame");
         server.await.ok();
     });

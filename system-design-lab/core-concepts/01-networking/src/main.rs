@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, clippy::all)]
 //! # Networking Essentials Demo
 //!
 //! Each protocol is in its own module:
@@ -12,19 +13,18 @@
 //! - `tls` — TLS 1.3 handshake
 //! - `pool` — Connection pooling concept
 
-mod tcp;
-mod http_server;
+mod grpc;
 mod http1;
 mod http2;
-mod quic;
-mod websocket;
-mod sse;
-mod grpc;
-mod tls;
+mod http_server;
 mod pool;
+mod quic;
+mod sse;
+mod tcp;
+mod tls;
+mod websocket;
 
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -104,7 +104,8 @@ fn main() {
 
     // ── Protocol Comparison ─────────────────────────────────────────────
     println!("━━━ Protocol Comparison ━━━");
-    println!("
+    println!(
+        "
 ┌──────────────┬───────────┬──────────────┬──────────┬─────────────┐
 │ Protocol     │ Transport │ Duplex       │ Overhead │ Best For    │
 ├──────────────┼───────────┼──────────────┼──────────┼─────────────┤
@@ -123,11 +124,13 @@ When to use what:
 • Mobile app, poor network    → HTTP/3 (QUIC)
 • Internal microservices      → gRPC over HTTP/2
 • Streaming large files       → HTTP/2 with flow control
-");
+"
+    );
 
     // ── Latency Breakdown ───────────────────────────────────────────────
     println!("━━━ Latency Breakdown ━━━");
-    println!("
+    println!(
+        "
 HTTP/1.0: New TCP conn per request
   DNS(50ms) + TCP(50ms) + TLS(100ms) + Request(50ms) = ~250ms EACH
 
@@ -146,7 +149,8 @@ HTTP/3: QUIC (0-RTT possible)
 WebSocket: After initial handshake
   Handshake: DNS + TCP + TLS + Upgrade = ~250ms (one time)
   Messages:  ~1ms per frame (no HTTP overhead, just 2-6 byte header)
-");
+"
+    );
 
     thread::sleep(Duration::from_millis(500));
     println!("╔══════════════════════════════════════════════════╗");

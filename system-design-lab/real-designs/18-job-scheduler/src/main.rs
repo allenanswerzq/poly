@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Job Scheduler - Mini Implementation
 //!
 //! Demonstrates:
@@ -12,12 +13,10 @@
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
 use rand::Rng;
-use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 // =============================================================================
@@ -159,8 +158,10 @@ impl DagScheduler {
 
     fn register(&self, job: &Job) {
         // Track this job's dependencies
-        self.pending_deps
-            .insert(job.id.clone(), AtomicU64::new(job.dependencies.len() as u64));
+        self.pending_deps.insert(
+            job.id.clone(),
+            AtomicU64::new(job.dependencies.len() as u64),
+        );
 
         // Register as dependent of each dependency
         for dep_id in &job.dependencies {
@@ -388,8 +389,8 @@ impl JobScheduler {
             if cron.should_run() {
                 let mut job = cron.job_template.clone();
                 job.id = format!(
-                    "{}_{}", 
-                    cron.id, 
+                    "{}_{}",
+                    cron.id,
                     self.job_counter.fetch_add(1, Ordering::SeqCst)
                 );
                 job.scheduled_at = Instant::now();
@@ -563,7 +564,10 @@ async fn main() {
     // Show results
     println!("\n--- Results ---");
     let (pending, running, completed, failed) = scheduler.get_stats();
-    println!("Pending: {}, Running: {}, Completed: {}, Failed: {}", pending, running, completed, failed);
+    println!(
+        "Pending: {}, Running: {}, Completed: {}, Failed: {}",
+        pending, running, completed, failed
+    );
 
     println!("\nJob results:");
     for entry in scheduler.results.iter() {

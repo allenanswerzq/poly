@@ -32,7 +32,8 @@ pub fn demo() {
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
 
-    db.execute_batch("
+    db.execute_batch(
+        "
         CREATE TABLE users_no_idx (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
@@ -47,7 +48,9 @@ pub fn demo() {
         );
         CREATE INDEX idx_email ON users_with_idx(email);
         CREATE INDEX idx_age ON users_with_idx(age);
-    ").unwrap();
+    ",
+    )
+    .unwrap();
 
     // Insert 100K rows into both tables
     let n = 100_000;
@@ -59,8 +62,14 @@ pub fn demo() {
         let age = 18 + (i % 62);
         db.execute(
             "INSERT INTO users_no_idx VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![i, format!("User{}", i), format!("user{}@example.com", i), age]
-        ).unwrap();
+            rusqlite::params![
+                i,
+                format!("User{}", i),
+                format!("user{}@example.com", i),
+                age
+            ],
+        )
+        .unwrap();
     }
     db.execute_batch("COMMIT").unwrap();
     let no_idx_insert = start.elapsed();
@@ -71,38 +80,59 @@ pub fn demo() {
         let age = 18 + (i % 62);
         db.execute(
             "INSERT INTO users_with_idx VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![i, format!("User{}", i), format!("user{}@example.com", i), age]
-        ).unwrap();
+            rusqlite::params![
+                i,
+                format!("User{}", i),
+                format!("user{}@example.com", i),
+                age
+            ],
+        )
+        .unwrap();
     }
     db.execute_batch("COMMIT").unwrap();
     let with_idx_insert = start.elapsed();
 
     println!("    Insert {} rows WITHOUT indexes: {:?}", n, no_idx_insert);
-    println!("    Insert {} rows WITH 2 indexes:  {:?}", n, with_idx_insert);
-    println!("    Indexes slow writes by ~{:.0}%\n",
-        (with_idx_insert.as_nanos() as f64 / no_idx_insert.as_nanos() as f64 - 1.0) * 100.0);
+    println!(
+        "    Insert {} rows WITH 2 indexes:  {:?}",
+        n, with_idx_insert
+    );
+    println!(
+        "    Indexes slow writes by ~{:.0}%\n",
+        (with_idx_insert.as_nanos() as f64 / no_idx_insert.as_nanos() as f64 - 1.0) * 100.0
+    );
 
     // Point lookup by email
     let target = "user50000@example.com";
     println!("    Point lookup: WHERE email = '{}'\n", target);
 
     let start = Instant::now();
-    let _: String = db.query_row(
-        "SELECT name FROM users_no_idx WHERE email = ?1", [target], |r| r.get(0)
-    ).unwrap();
+    let _: String = db
+        .query_row(
+            "SELECT name FROM users_no_idx WHERE email = ?1",
+            [target],
+            |r| r.get(0),
+        )
+        .unwrap();
     let scan_time = start.elapsed();
 
     let start = Instant::now();
-    let _: String = db.query_row(
-        "SELECT name FROM users_with_idx WHERE email = ?1", [target], |r| r.get(0)
-    ).unwrap();
+    let _: String = db
+        .query_row(
+            "SELECT name FROM users_with_idx WHERE email = ?1",
+            [target],
+            |r| r.get(0),
+        )
+        .unwrap();
     let idx_time = start.elapsed();
 
     println!("    WITHOUT index (full table scan): {:?}", scan_time);
     println!("    WITH index (B-tree lookup):      {:?}", idx_time);
     if idx_time.as_nanos() > 0 {
-        println!("    Speedup: ~{:.0}x faster\n",
-            scan_time.as_nanos() as f64 / idx_time.as_nanos().max(1) as f64);
+        println!(
+            "    Speedup: ~{:.0}x faster\n",
+            scan_time.as_nanos() as f64 / idx_time.as_nanos().max(1) as f64
+        );
     }
 
     // Show EXPLAIN QUERY PLAN
@@ -110,31 +140,49 @@ pub fn demo() {
     let mut stmt = db.prepare(
         "EXPLAIN QUERY PLAN SELECT name FROM users_no_idx WHERE email = 'user50000@example.com'"
     ).unwrap();
-    let plans: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(3))
-        .unwrap().filter_map(|r| r.ok()).collect();
-    for p in &plans { println!("    → {}", p); }
+    let plans: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    for p in &plans {
+        println!("    → {}", p);
+    }
 
     println!("\n    EXPLAIN QUERY PLAN (with index):");
     let mut stmt = db.prepare(
         "EXPLAIN QUERY PLAN SELECT name FROM users_with_idx WHERE email = 'user50000@example.com'"
     ).unwrap();
-    let plans: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(3))
-        .unwrap().filter_map(|r| r.ok()).collect();
-    for p in &plans { println!("    → {}", p); }
+    let plans: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    for p in &plans {
+        println!("    → {}", p);
+    }
 
     // Range query
     println!("\n    Range query: WHERE age BETWEEN 18 AND 25\n");
 
     let start = Instant::now();
-    let count_no: i64 = db.query_row(
-        "SELECT COUNT(*) FROM users_no_idx WHERE age BETWEEN 18 AND 25", [], |r| r.get(0)
-    ).unwrap();
+    let count_no: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM users_no_idx WHERE age BETWEEN 18 AND 25",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     let scan_time = start.elapsed();
 
     let start = Instant::now();
-    let count_idx: i64 = db.query_row(
-        "SELECT COUNT(*) FROM users_with_idx WHERE age BETWEEN 18 AND 25", [], |r| r.get(0)
-    ).unwrap();
+    let count_idx: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM users_with_idx WHERE age BETWEEN 18 AND 25",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     let idx_time = start.elapsed();
 
     println!("    WITHOUT index: {} rows in {:?}", count_no, scan_time);

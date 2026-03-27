@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Rate Limiter Implementations
 //!
 //! This module implements several rate limiting algorithms:
@@ -6,11 +7,11 @@
 //! 3. Leaky Bucket - Smooth output rate
 //! 4. Fixed Window - Simplest but has edge cases
 
+use dashmap::DashMap;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use dashmap::DashMap;
-use parking_lot::Mutex;
 
 // =============================================================================
 // Token Bucket Rate Limiter
@@ -22,10 +23,10 @@ use parking_lot::Mutex;
 /// Each request consumes one token. Requests are rejected when no tokens available.
 #[derive(Debug)]
 pub struct TokenBucket {
-    capacity: f64,         // Maximum tokens
-    refill_rate: f64,      // Tokens per second
-    tokens: f64,           // Current tokens (can be fractional)
-    last_update: Instant,  // Last token refill time
+    capacity: f64,        // Maximum tokens
+    refill_rate: f64,     // Tokens per second
+    tokens: f64,          // Current tokens (can be fractional)
+    last_update: Instant, // Last token refill time
 }
 
 impl TokenBucket {
@@ -33,7 +34,7 @@ impl TokenBucket {
         Self {
             capacity,
             refill_rate,
-            tokens: capacity,  // Start full
+            tokens: capacity, // Start full
             last_update: Instant::now(),
         }
     }
@@ -88,7 +89,8 @@ impl DistributedTokenBucket {
 
     /// Try to acquire tokens for a specific client
     pub fn try_acquire(&self, client_id: &str, tokens: f64) -> bool {
-        let bucket = self.buckets
+        let bucket = self
+            .buckets
             .entry(client_id.to_string())
             .or_insert_with(|| Mutex::new(TokenBucket::new(self.capacity, self.refill_rate)));
 
@@ -144,7 +146,8 @@ impl SlidingWindowCounter {
         let now = Self::current_time_ms();
         let current_window = now / self.window_size_ms;
 
-        let mut entry = self.counters
+        let mut entry = self
+            .counters
             .entry(client_id.to_string())
             .or_insert(WindowState {
                 prev_count: 0,
@@ -169,8 +172,7 @@ impl SlidingWindowCounter {
         let elapsed_in_window = now % self.window_size_ms;
         let weight = elapsed_in_window as f64 / self.window_size_ms as f64;
 
-        let weighted_count = state.prev_count as f64 * (1.0 - weight)
-                           + state.curr_count as f64;
+        let weighted_count = state.prev_count as f64 * (1.0 - weight) + state.curr_count as f64;
 
         if weighted_count < self.max_requests as f64 {
             state.curr_count += 1;
@@ -191,8 +193,8 @@ impl SlidingWindowCounter {
                 if current_window == state.curr_window_start {
                     let elapsed_in_window = now % self.window_size_ms;
                     let weight = elapsed_in_window as f64 / self.window_size_ms as f64;
-                    let weighted_count = state.prev_count as f64 * (1.0 - weight)
-                                       + state.curr_count as f64;
+                    let weighted_count =
+                        state.prev_count as f64 * (1.0 - weight) + state.curr_count as f64;
                     (self.max_requests as f64 - weighted_count).max(0.0) as u64
                 } else {
                     self.max_requests
@@ -227,13 +229,15 @@ impl FixedWindowCounter {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64 / self.window_size_ms
+            .as_millis() as u64
+            / self.window_size_ms
     }
 
     pub fn try_acquire(&self, client_id: &str) -> bool {
         let current_window = self.current_window();
 
-        let mut entry = self.counters
+        let mut entry = self
+            .counters
             .entry(client_id.to_string())
             .or_insert((current_window, AtomicU64::new(0)));
 
@@ -254,7 +258,7 @@ impl FixedWindowCounter {
 /// Leaky bucket - processes requests at a constant rate
 pub struct LeakyBucket {
     capacity: usize,
-    leak_rate: f64,  // Requests processed per second
+    leak_rate: f64, // Requests processed per second
     queue: Mutex<Vec<Instant>>,
     last_leak: Mutex<Instant>,
 }
@@ -307,8 +311,14 @@ impl LeakyBucket {
 
 /// A rate limiter that supports different rules for different endpoints
 pub struct RateLimiterWithRules {
-    rules: HashMap<String, (u64, Duration)>,  // endpoint -> (max_requests, window)
+    rules: HashMap<String, (u64, Duration)>, // endpoint -> (max_requests, window)
     limiters: DashMap<String, SlidingWindowCounter>,
+}
+
+impl Default for RateLimiterWithRules {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RateLimiterWithRules {
@@ -320,18 +330,21 @@ impl RateLimiterWithRules {
     }
 
     pub fn add_rule(&mut self, endpoint: &str, max_requests: u64, window: Duration) {
-        self.rules.insert(endpoint.to_string(), (max_requests, window));
+        self.rules
+            .insert(endpoint.to_string(), (max_requests, window));
     }
 
     pub fn check(&self, endpoint: &str, client_id: &str) -> RateLimitResult {
         let key = format!("{}:{}", endpoint, client_id);
 
-        let (max_requests, window) = self.rules
+        let (max_requests, window) = self
+            .rules
             .get(endpoint)
             .copied()
-            .unwrap_or((1000, Duration::from_secs(60)));  // Default rule
+            .unwrap_or((1000, Duration::from_secs(60))); // Default rule
 
-        let limiter = self.limiters
+        let limiter = self
+            .limiters
             .entry(endpoint.to_string())
             .or_insert_with(|| SlidingWindowCounter::new(window, max_requests));
 
@@ -369,8 +382,12 @@ fn main() {
     // Burst of 8 requests
     for i in 1..=12 {
         let allowed = bucket.try_acquire(1.0);
-        println!("  Request {}: {} (remaining: {:.1})",
-                 i, if allowed { "✓" } else { "✗" }, bucket.available_tokens());
+        println!(
+            "  Request {}: {} (remaining: {:.1})",
+            i,
+            if allowed { "✓" } else { "✗" },
+            bucket.available_tokens()
+        );
     }
 
     println!("\nWaiting 2 seconds for refill...");
@@ -383,16 +400,23 @@ fn main() {
 
     for i in 1..=8 {
         let allowed = sliding.try_acquire("user-1");
-        println!("  Request {}: {} (remaining: {})",
-                 i, if allowed { "✓" } else { "✗" }, sliding.get_remaining("user-1"));
+        println!(
+            "  Request {}: {} (remaining: {})",
+            i,
+            if allowed { "✓" } else { "✗" },
+            sliding.get_remaining("user-1")
+        );
     }
 
     println!("\nWaiting 100ms for new window...");
     std::thread::sleep(Duration::from_millis(100));
 
     let allowed = sliding.try_acquire("user-1");
-    println!("  Request after wait: {} (remaining: {})\n",
-             if allowed { "✓" } else { "✗" }, sliding.get_remaining("user-1"));
+    println!(
+        "  Request after wait: {} (remaining: {})\n",
+        if allowed { "✓" } else { "✗" },
+        sliding.get_remaining("user-1")
+    );
 
     // Demo 3: Different clients
     println!("\n  ═══ Distributed Rate Limiting (per-client) ═══");
@@ -436,8 +460,12 @@ fn main() {
     println!("Rapid requests:");
     for i in 1..=5 {
         let allowed = leaky.try_acquire();
-        println!("  Request {}: {} (queue: {})",
-                 i, if allowed { "✓" } else { "✗" }, leaky.queue_size());
+        println!(
+            "  Request {}: {} (queue: {})",
+            i,
+            if allowed { "✓" } else { "✗" },
+            leaky.queue_size()
+        );
     }
 
     println!("\nWaiting 1 second (2 should leak)...");
@@ -472,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_token_bucket_refill() {
-        let mut bucket = TokenBucket::new(2.0, 10.0);  // Fast refill
+        let mut bucket = TokenBucket::new(2.0, 10.0); // Fast refill
 
         // Drain bucket
         assert!(bucket.try_acquire(2.0));
@@ -505,7 +533,7 @@ mod tests {
         // Each client has their own limit
         assert!(limiter.try_acquire("client-a", 1.0));
         assert!(limiter.try_acquire("client-a", 1.0));
-        assert!(!limiter.try_acquire("client-a", 1.0));  // Limited
+        assert!(!limiter.try_acquire("client-a", 1.0)); // Limited
 
         // Client B still has full quota
         assert!(limiter.try_acquire("client-b", 1.0));

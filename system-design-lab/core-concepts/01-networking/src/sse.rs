@@ -20,10 +20,11 @@ pub fn demo(_base_url: &str) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         // ── Start SSE server using axum's real Sse support ───────────────
-        let sse_app = axum::Router::new()
-            .route("/events", axum::routing::get(sse_handler));
+        let sse_app = axum::Router::new().route("/events", axum::routing::get(sse_handler));
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:9011").await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:9011")
+            .await
+            .unwrap();
         println!("  [SSE Server] axum SSE listening on 127.0.0.1:9011/events");
 
         let server = tokio::spawn(async move {
@@ -90,14 +91,22 @@ pub fn demo(_base_url: &str) {
                         "  [SSE Client] Event #{} (id={}, type={}): {}",
                         event_count,
                         id,
-                        if event_type.is_empty() { "message" } else { &event_type },
+                        if event_type.is_empty() {
+                            "message"
+                        } else {
+                            &event_type
+                        },
                         data
                     );
                 }
             }
         }
 
-        println!("\n  [SSE Client] Stream ended after {} events ({:?})", event_count, start.elapsed());
+        println!(
+            "\n  [SSE Client] Stream ended after {} events ({:?})",
+            event_count,
+            start.elapsed()
+        );
         server.abort();
     });
 
@@ -124,7 +133,9 @@ pub fn demo(_base_url: &str) {
 }
 
 /// axum SSE handler — streams events using axum's built-in Sse support.
-async fn sse_handler() -> axum::response::sse::Sse<impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+async fn sse_handler() -> axum::response::sse::Sse<
+    impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
     let events = vec![
         (1, "price", r#"{"symbol":"BTC","price":"$67,000"}"#),
         (2, "price", r#"{"symbol":"ETH","price":"$3,400"}"#),
@@ -145,6 +156,5 @@ async fn sse_handler() -> axum::response::sse::Sse<impl futures::Stream<Item = R
         }
     };
 
-    axum::response::sse::Sse::new(stream)
-        .keep_alive(axum::response::sse::KeepAlive::default())
+    axum::response::sse::Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
 }

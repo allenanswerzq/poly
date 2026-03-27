@@ -44,7 +44,10 @@ struct CacheAside {
 
 impl CacheAside {
     fn new(store: Arc<Store>) -> Self {
-        Self { store, db_reads: AtomicI32::new(0) }
+        Self {
+            store,
+            db_reads: AtomicI32::new(0),
+        }
     }
 
     /// Read path: cache → miss → DB → populate cache
@@ -55,18 +58,18 @@ impl CacheAside {
     /// Same read path but with a custom Redis connection (for multi-threaded use)
     fn get_with(&self, cache: &Cache, key: &str) -> Option<String> {
         if let Some(val) = cache.get(key) {
-            return Some(val);                  // HIT — fast path
+            return Some(val); // HIT — fast path
         }
         self.db_reads.fetch_add(1, Ordering::Relaxed);
         let val = self.store.db.get(key)?;
-        cache.set(key, &val, 60);              // populate with TTL (never forever!)
+        cache.set(key, &val, 60); // populate with TTL (never forever!)
         Some(val)
     }
 
     /// Write path: update DB → DEL cache (not SET!)
     fn set(&self, key: &str, value: &str) {
-        self.store.db.set(key, value);         // 1. DB is source of truth
-        self.store.cache.del(key);             // 2. Invalidate — next read re-fills
+        self.store.db.set(key, value); // 1. DB is source of truth
+        self.store.cache.del(key); // 2. Invalidate — next read re-fills
     }
 
     fn db_read_count(&self) -> i32 {
@@ -92,7 +95,12 @@ pub fn demo() {
         let before = ca.db_read_count();
         let val = ca.get(key).unwrap_or_default();
         let hit = ca.db_read_count() == before;
-        println!("      GET {} → {} [{}]", key, val, if hit { "HIT" } else { "MISS → DB" });
+        println!(
+            "      GET {} → {} [{}]",
+            key,
+            val,
+            if hit { "HIT" } else { "MISS → DB" }
+        );
     }
 
     // ── Warm cache: all hits ──
@@ -102,7 +110,12 @@ pub fn demo() {
         let before = ca.db_read_count();
         let val = ca.get(key).unwrap_or_default();
         let hit = ca.db_read_count() == before;
-        println!("      GET {} → {} [{}]", key, val, if hit { "HIT" } else { "MISS → DB" });
+        println!(
+            "      GET {} → {} [{}]",
+            key,
+            val,
+            if hit { "HIT" } else { "MISS → DB" }
+        );
     }
 
     // ── Write: DB update → cache invalidation ──
@@ -110,7 +123,10 @@ pub fn demo() {
     println!("\n    Write: DB.set → cache.del → next read re-fills:\n");
     ca.set("user:1", r#"{"name":"Alicia"}"#);
     let val = ca.get("user:1").unwrap_or_default();
-    println!("      GET user:1 → {} (fresh from DB after invalidation)", val);
+    println!(
+        "      GET user:1 → {} (fresh from DB after invalidation)",
+        val
+    );
     println!("      Total DB reads: {}", ca.db_read_count());
 
     // ── Race condition: stale backfill ──
@@ -157,6 +173,9 @@ pub fn demo() {
     let stale = stale_detected.load(Ordering::Relaxed);
     println!("      T1 backfilled cache = {:?}", cached);
     println!("      DB has              = {:?}", db_val);
-    println!("      Stale? {} (cache has old value after invalidation)", stale > 0);
+    println!(
+        "      Stale? {} (cache has old value after invalidation)",
+        stale > 0
+    );
     println!("      Fix: TTL ensures staleness auto-expires (60s max)\n");
 }

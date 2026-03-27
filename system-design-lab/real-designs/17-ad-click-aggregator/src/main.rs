@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 //! # Ad Click Aggregator - Mini Implementation
 //!
 //! Demonstrates:
@@ -69,7 +70,8 @@ impl ClickDeduplicator {
             return true;
         }
 
-        self.seen_events.insert(event_id.to_string(), Instant::now());
+        self.seen_events
+            .insert(event_id.to_string(), Instant::now());
         false
     }
 
@@ -136,7 +138,10 @@ impl AggregationWindow {
             bucket.clicks += 1;
             bucket.users.insert(event.user_id.clone());
             *bucket.by_country.entry(event.country.clone()).or_default() += 1;
-            *bucket.by_device.entry(event.device_type.clone()).or_default() += 1;
+            *bucket
+                .by_device
+                .entry(event.device_type.clone())
+                .or_default() += 1;
         }
     }
 
@@ -277,7 +282,10 @@ impl MapReduceAggregator {
                 ("clicks".to_string(), 1),
             ));
             outputs.push((
-                format!("campaign:{}:device:{}", event.campaign_id, event.device_type),
+                format!(
+                    "campaign:{}:device:{}",
+                    event.campaign_id, event.device_type
+                ),
                 ("clicks".to_string(), 1),
             ));
         }
@@ -362,8 +370,8 @@ fn main() {
     println!("\n  ═══ Processing Click Events ═══");
 
     let campaigns = vec!["camp_summer", "camp_holiday", "camp_flash"];
-    let countries = vec!["US", "UK", "DE", "FR", "JP"];
-    let devices = vec!["mobile", "desktop", "tablet"];
+    let countries = ["US", "UK", "DE", "FR", "JP"];
+    let devices = ["mobile", "desktop", "tablet"];
 
     let mut rng = rand::thread_rng();
     let mut events_processed = 0;
