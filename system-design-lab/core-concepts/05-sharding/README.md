@@ -252,3 +252,40 @@ Usually used together:
 │ └─────┘ └─────┘ │     │ └─────┘ └─────┘ │
 └─────────────────┘     └─────────────────┘
 ```
+
+### 7. Sharding vs Partitioning
+
+These are often used interchangeably, but there's a real distinction:
+
+**Partitioning** = splitting data within a single database instance. The DB engine handles it internally.
+- PostgreSQL `PARTITION BY RANGE (created_at)` — one server, multiple physical files
+- You don't change your connection string or query routing
+
+**Sharding** = splitting data across multiple independent database instances (different servers).
+- User IDs 0-999 → DB server A, 1000-1999 → DB server B
+- Application or proxy must route queries to the correct shard
+- Each shard is a fully independent database
+
+```
+Partitioning (single server):
+  ┌─────────────────────────────┐
+  │        PostgreSQL            │
+  │  ┌────────┐  ┌────────┐    │
+  │  │ Part 1 │  │ Part 2 │ .. │
+  │  └────────┘  └────────┘    │
+  └─────────────────────────────┘
+    One server, one connection
+
+Sharding (multiple servers):
+  ┌──────────┐  ┌──────────┐  ┌──────────┐
+  │ Shard 0  │  │ Shard 1  │  │ Shard 2  │
+  │ (Server) │  │ (Server) │  │ (Server) │
+  └──────────┘  └──────────┘  └──────────┘
+    App must route to correct shard
+```
+
+**Partitioning** helps with query performance (scan only relevant partition) but doesn't solve write throughput — it's still one server.
+
+**Sharding** solves write throughput by distributing load across N servers, but adds complexity: cross-shard queries, distributed transactions, rebalancing when adding shards.
+
+In practice, "sharding" often means "horizontal partitioning across servers" — it IS partitioning, just the distributed kind. When people say "partitioning" alone, they usually mean single-server.
