@@ -255,3 +255,111 @@ AP Approach:
 | Inventory count | CP | Can't oversell |
 | Like count | AP | Off by a few is fine |
 | Leader election | CP | Must have exactly one leader |
+
+## ACID vs BASE
+
+CAP is about **distributed systems**. ACID is about **transactions** (usually single-node).
+They're related: when you go distributed, you often trade ACID for BASE.
+
+### ACID (Traditional Databases — PostgreSQL, MySQL)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                            ACID                                         │
+│                                                                         │
+│   A — Atomicity                                                         │
+│       All operations in a transaction succeed or ALL roll back.         │
+│       Transfer $100: debit AND credit both happen, or neither.          │
+│       No partial state.                                                 │
+│                                                                         │
+│   C — Consistency                                                       │
+│       Transaction moves DB from one valid state to another.             │
+│       Constraints (foreign keys, unique, CHECK) are always satisfied.   │
+│       NOT the same "C" as in CAP.                                       │
+│                                                                         │
+│   I — Isolation                                                         │
+│       Concurrent transactions don't interfere with each other.          │
+│       As if they ran one at a time (serializable).                      │
+│       Levels: READ UNCOMMITTED → READ COMMITTED → REPEATABLE READ      │
+│               → SERIALIZABLE (strongest, slowest)                       │
+│                                                                         │
+│   D — Durability                                                        │
+│       Once committed, data survives crashes (written to disk/WAL).      │
+│       Even if power goes out 1ms after COMMIT.                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### BASE (Distributed Databases — Cassandra, DynamoDB)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                            BASE                                         │
+│                                                                         │
+│   BA — Basically Available                                              │
+│        System always responds, even during failures.                    │
+│        May return stale data, but never an error.                       │
+│                                                                         │
+│   S  — Soft state                                                       │
+│        State may change over time, even without new writes.             │
+│        Replicas are still converging in the background.                 │
+│                                                                         │
+│   E  — Eventually consistent                                            │
+│        If no new writes, all replicas will eventually have same data.   │
+│        "Eventually" = usually milliseconds, but no hard guarantee.      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### ACID vs BASE Comparison
+
+| | ACID | BASE |
+|---|------|------|
+| **Model** | Pessimistic (lock, verify, commit) | Optimistic (write, fix conflicts later) |
+| **Consistency** | Strong — read always returns latest write | Eventual — read may return stale data |
+| **Availability** | May reject/block during contention | Always responds |
+| **Scaling** | Vertical (bigger server) | Horizontal (more servers) |
+| **Transactions** | Multi-row, multi-table | Usually single-row/partition |
+| **Conflicts** | Prevented by locks | Detected and resolved after the fact |
+| **Use when** | Correctness matters (money, inventory) | Availability matters (social feeds, caches) |
+
+### The "C" in ACID ≠ the "C" in CAP
+
+This confuses everyone:
+
+| | ACID Consistency | CAP Consistency |
+|---|---|---|
+| **Means** | Data satisfies constraints (FK, unique, CHECK) | All nodes see the same data at the same time |
+| **Scope** | Single database, single transaction | Distributed system, multiple replicas |
+| **Example** | Can't insert order for non-existent user | Read from replica B returns what was just written to replica A |
+| **Enforced by** | Database constraints | Replication protocol (Raft, 2PC) |
+
+### Isolation Levels (the "I" in ACID, ranked)
+
+```
+  Weakest                                              Strongest
+    │                                                      │
+    ▼                                                      ▼
+  READ          READ            REPEATABLE       SERIALIZABLE
+  UNCOMMITTED   COMMITTED       READ
+    │             │                │                  │
+    │ Dirty       │ Non-          │ Phantom          │ Perfect
+    │ reads       │ repeatable    │ reads            │ isolation
+    │ possible    │ reads         │ possible         │ (slowest)
+    │             │ possible      │                  │
+    ▼             ▼               ▼                  ▼
+  Fastest ─────────────────────────────────── Slowest
+
+  Most DBs default to READ COMMITTED (PostgreSQL) or REPEATABLE READ (MySQL InnoDB).
+  SERIALIZABLE is rarely used — too slow for most workloads.
+```
+
+### When to use what
+
+| Scenario | Model | Why |
+|----------|-------|-----|
+| Bank transfer | ACID + CP | Can't lose money or double-spend |
+| Shopping cart | BASE + AP | Better to keep items than lose the cart |
+| User profile | ACID (single-node) or BASE (multi-region) | Depends on scale |
+| Analytics writes | BASE | High volume, eventual accuracy is fine |
+| Inventory decrement | ACID | Can't oversell (negative stock) |
+| Like/view counts | BASE | Off by a few is acceptable |
+| Distributed config | CP + consensus (Raft) | All nodes must see same config |
