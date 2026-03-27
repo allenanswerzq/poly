@@ -38,19 +38,53 @@ use std::collections::HashMap;
 const TOTAL_SLOTS: usize = 16; // simplified (Redis uses 16384)
 
 /// A physical shard that owns a set of virtual slots.
+/// Data is stored PER-SLOT, not in a flat map.
+/// This way, migrating a slot = move its entire HashMap. O(keys_in_slot).
+/// If we stored data per-shard, migrating would scan ALL keys and re-hash. O(all_keys).
 struct Shard {
     id: usize,
-    slots: Vec<usize>,
-    data: HashMap<String, String>,
+    slot_data: HashMap<usize, HashMap<String, String>>, // slot → {key → value}
 }
 
 impl Shard {
     fn new(id: usize) -> Self {
         Self {
             id,
-            slots: Vec::new(),
-            data: HashMap::new(),
+            slot_data: HashMap::new(),
         }
+    }
+
+    fn slots(&self) -> Vec<usize> {
+        self.slot_data.keys().copied().collect()
+    }
+
+    fn num_slots(&self) -> usize {
+        self.slot_data.len()
+    }
+
+    fn num_keys(&self) -> usize {
+        self.slot_data.values().map(|m| m.len()).sum()
+    }
+
+    fn insert(&mut self, slot: usize, key: String, value: String) {
+        self.slot_data
+            .entry(slot)
+            .or_default()
+            .insert(key, value);
+    }
+
+    fn get(&self, slot: usize, key: &str) -> Option<&String> {
+        self.slot_data.get(&slot)?.get(key)
+    }
+
+    /// Remove an entire slot's data — O(1), just take the HashMap.
+    fn take_slot(&mut self, slot: usize) -> HashMap<String, String> {
+        self.slot_data.remove(&slot).unwrap_or_default()
+    }
+
+    /// Receive an entire slot's data — O(1), just insert the HashMap.
+    fn receive_slot(&mut self, slot: usize, data: HashMap<String, String>) {
+        self.slot_data.insert(slot, data);
     }
 }
 
@@ -70,7 +104,9 @@ impl SlotRouter {
         for (slot, entry) in slot_to_shard.iter_mut().enumerate().take(TOTAL_SLOTS) {
             let shard_id = slot % num_shards;
             *entry = shard_id;
-            shards[shard_id].slots.push(slot);
+            shards[shard_id]
+                .slot_data
+                .insert(slot, HashMap::new()); // initialize empty slot
         }
 
         Self {
@@ -80,7 +116,6 @@ impl SlotRouter {
     }
 
     fn key_to_slot(key: &str) -> usize {
-        // Simple hash to slot
         let mut h: u64 = 0xcbf29ce484222325;
         for byte in key.bytes() {
             h ^= byte as u64;
@@ -95,60 +130,48 @@ impl SlotRouter {
     }
 
     fn set(&mut self, key: &str, value: &str) {
-        let shard_id = self.shard_for(key);
-        self.shards[shard_id]
-            .data
-            .insert(key.to_string(), value.to_string());
+        let slot = Self::key_to_slot(key);
+        let shard_id = self.slot_to_shard[slot];
+        self.shards[shard_id].insert(slot, key.to_string(), value.to_string());
     }
 
     fn get(&self, key: &str) -> Option<&String> {
-        let shard_id = self.shard_for(key);
-        self.shards[shard_id].data.get(key)
+        let slot = Self::key_to_slot(key);
+        let shard_id = self.slot_to_shard[slot];
+        self.shards[shard_id].get(slot, key)
     }
 
     /// Add a new shard by migrating some slots from existing shards.
-    /// Returns how many keys were moved.
+    /// Migration is O(keys_in_moved_slots) — NOT O(all_keys_on_shard).
     fn add_shard(&mut self) -> (usize, usize) {
         let new_id = self.shards.len();
         self.shards.push(Shard::new(new_id));
 
-        // Steal ~1/N slots from each existing shard
         let slots_per_shard = TOTAL_SLOTS / (new_id + 1);
         let mut moved_slots = 0;
         let mut moved_keys = 0;
 
-        // Collect slots to move
-        let mut slots_to_move = Vec::new();
+        // Collect (shard_id, slot) pairs to move
+        let mut slots_to_move: Vec<(usize, usize)> = Vec::new();
         for shard in &self.shards[..new_id] {
-            // Each existing shard donates a few slots
-            let donate = shard.slots.len().saturating_sub(slots_per_shard);
-            for &slot in shard.slots.iter().rev().take(donate) {
-                slots_to_move.push(slot);
+            let donate = shard.num_slots().saturating_sub(slots_per_shard);
+            let slots: Vec<usize> = shard.slots();
+            for &slot in slots.iter().rev().take(donate) {
+                slots_to_move.push((shard.id, slot));
             }
         }
 
-        // Move slots and their data to new shard
-        for slot in &slots_to_move {
-            let old_shard_id = self.slot_to_shard[*slot];
+        // Move each slot: take entire HashMap from old shard, give to new shard
+        for (old_shard_id, slot) in &slots_to_move {
+            // O(1) take — just remove the slot's HashMap from old shard
+            let slot_data = self.shards[*old_shard_id].take_slot(*slot);
+            moved_keys += slot_data.len();
+
+            // O(1) receive — just insert the HashMap into new shard
+            self.shards[new_id].receive_slot(*slot, slot_data);
+
+            // Update routing table
             self.slot_to_shard[*slot] = new_id;
-
-            // Move data belonging to this slot
-            let old_data: Vec<(String, String)> = self.shards[old_shard_id]
-                .data
-                .iter()
-                .filter(|(k, _)| Self::key_to_slot(k) == *slot)
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-
-            for (k, v) in &old_data {
-                self.shards[old_shard_id].data.remove(k);
-                self.shards[new_id].data.insert(k.clone(), v.clone());
-                moved_keys += 1;
-            }
-
-            // Update slot ownership
-            self.shards[old_shard_id].slots.retain(|s| s != slot);
-            self.shards[new_id].slots.push(*slot);
             moved_slots += 1;
         }
 
@@ -160,8 +183,8 @@ impl SlotRouter {
             println!(
                 "      Shard {}: {} slots, {} keys",
                 shard.id,
-                shard.slots.len(),
-                shard.data.len()
+                shard.num_slots(),
+                shard.num_keys()
             );
         }
     }
