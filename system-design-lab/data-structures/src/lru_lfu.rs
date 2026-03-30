@@ -138,9 +138,9 @@ impl LruCache {
 pub struct LfuCache {
     capacity: usize,
     min_freq: usize,
-    key_val: HashMap<i32, (i32, usize)>,    // key -> (value, freq)
-    freq_keys: HashMap<usize, Vec<i32>>,     // freq -> keys in insertion order
-    key_pos: HashMap<i32, usize>,            // key -> position in its freq bucket
+    key_val: HashMap<i32, (i32, usize)>, // key -> (value, freq)
+    freq_keys: HashMap<usize, Vec<i32>>, // freq -> keys in insertion order
+    key_pos: HashMap<i32, usize>,        // key -> position in its freq bucket
 }
 
 impl LfuCache {
@@ -198,11 +198,7 @@ impl LfuCache {
 
         // Update min_freq if we emptied the min bucket
         if self.min_freq == old_freq {
-            if self
-                .freq_keys
-                .get(&old_freq)
-                .map_or(true, |b| b.is_empty())
-            {
+            if self.freq_keys.get(&old_freq).map_or(true, |b| b.is_empty()) {
                 self.min_freq = new_freq;
             }
         }
@@ -223,7 +219,7 @@ impl LfuCache {
     fn evict(&mut self) {
         let bucket = self.freq_keys.get_mut(&self.min_freq).unwrap();
         let evicted = bucket.remove(0); // oldest in min-freq bucket
-        // Shift positions
+                                        // Shift positions
         for (i, &k) in bucket.iter().enumerate() {
             self.key_pos.insert(k, i);
         }

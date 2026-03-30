@@ -5,8 +5,8 @@
 //! 1. Separate chaining (linked list per bucket)
 //! 2. Open addressing with linear probing
 
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 // =============================================================================
 // Separate Chaining HashMap
@@ -166,10 +166,7 @@ impl<K: Hash + Eq, V> ProbingHashMap<K, V> {
             match &self.slots[idx] {
                 Slot::Occupied(k, _) if *k == key => {
                     // Update existing
-                    let old = std::mem::replace(
-                        &mut self.slots[idx],
-                        Slot::Occupied(key, value),
-                    );
+                    let old = std::mem::replace(&mut self.slots[idx], Slot::Occupied(key, value));
                     return match old {
                         Slot::Occupied(_, v) => Some(v),
                         _ => unreachable!(),

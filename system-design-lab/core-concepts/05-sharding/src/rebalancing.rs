@@ -67,10 +67,7 @@ impl Shard {
     }
 
     fn insert(&mut self, slot: usize, key: String, value: String) {
-        self.slot_data
-            .entry(slot)
-            .or_default()
-            .insert(key, value);
+        self.slot_data.entry(slot).or_default().insert(key, value);
     }
 
     fn get(&self, slot: usize, key: &str) -> Option<&String> {
@@ -104,9 +101,7 @@ impl SlotRouter {
         for (slot, entry) in slot_to_shard.iter_mut().enumerate().take(TOTAL_SLOTS) {
             let shard_id = slot % num_shards;
             *entry = shard_id;
-            shards[shard_id]
-                .slot_data
-                .insert(slot, HashMap::new()); // initialize empty slot
+            shards[shard_id].slot_data.insert(slot, HashMap::new()); // initialize empty slot
         }
 
         Self {

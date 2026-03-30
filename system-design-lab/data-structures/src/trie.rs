@@ -163,7 +163,15 @@ impl GenericTrie {
 pub fn demo() {
     println!("=== Trie ===");
     let mut trie = Trie::new();
-    let words = ["apple", "app", "application", "apply", "banana", "band", "bandana"];
+    let words = [
+        "apple",
+        "app",
+        "application",
+        "apply",
+        "banana",
+        "band",
+        "bandana",
+    ];
     for w in &words {
         trie.insert(w);
     }

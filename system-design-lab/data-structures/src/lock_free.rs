@@ -5,9 +5,9 @@
 //! - Lock-free atomic counter
 //! - SPSC ring buffer (single-producer, single-consumer)
 
-use std::sync::atomic::{AtomicPtr, AtomicUsize, AtomicBool, Ordering};
-use std::sync::Arc;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 
 // =============================================================================
@@ -315,7 +315,10 @@ pub fn demo() {
 
     producer.join().unwrap();
     let sum = consumer.join().unwrap();
-    println!("Sum of 0..50 through SPSC queue: {sum} (expected {})", (0..50u64).sum::<u64>());
+    println!(
+        "Sum of 0..50 through SPSC queue: {sum} (expected {})",
+        (0..50u64).sum::<u64>()
+    );
 
     println!("\n=== Spin Lock ===");
     let lock = Arc::new(SpinLock::new());

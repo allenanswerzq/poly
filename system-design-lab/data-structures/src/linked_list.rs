@@ -55,10 +55,7 @@ impl<T> SinglyLinkedList<T> {
     /// Push to the back — O(n).
     pub fn push_back(&mut self, value: T) {
         let new_idx = self.arena.len();
-        self.arena.push(SinglyNode {
-            value,
-            next: None,
-        });
+        self.arena.push(SinglyNode { value, next: None });
 
         if self.head.is_none() {
             self.head = Some(new_idx);

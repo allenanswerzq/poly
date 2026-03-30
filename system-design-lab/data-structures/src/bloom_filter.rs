@@ -13,9 +13,9 @@ use std::hash::{Hash, Hasher};
 
 pub struct BloomFilter {
     bits: Vec<bool>,
-    num_bits: usize,     // m
-    num_hashes: usize,   // k
-    count: usize,        // n (items inserted)
+    num_bits: usize,   // m
+    num_hashes: usize, // k
+    count: usize,      // n (items inserted)
 }
 
 impl BloomFilter {
@@ -65,9 +65,7 @@ impl BloomFilter {
 
     /// Check membership. `true` means "probably in set", `false` means "definitely not".
     pub fn contains<T: Hash>(&self, item: &T) -> bool {
-        self.hash_positions(item)
-            .iter()
-            .all(|&pos| self.bits[pos])
+        self.hash_positions(item).iter().all(|&pos| self.bits[pos])
     }
 
     /// Estimated false positive rate given current fill.

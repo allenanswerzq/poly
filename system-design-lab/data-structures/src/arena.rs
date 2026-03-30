@@ -18,7 +18,7 @@ use std::sync::Mutex;
 
 pub struct Arena {
     chunks: Vec<Vec<u8>>,
-    current: usize,     // index into current chunk
+    current: usize, // index into current chunk
     chunk_size: usize,
 }
 
@@ -150,9 +150,7 @@ pub struct ConcurrentPool<T> {
 
 impl<T: Default> ConcurrentPool<T> {
     pub fn new(size: usize) -> Self {
-        let objects: Vec<_> = (0..size)
-            .map(|_| Mutex::new(Some(T::default())))
-            .collect();
+        let objects: Vec<_> = (0..size).map(|_| Mutex::new(Some(T::default()))).collect();
         let free_list = Mutex::new((0..size).collect());
         Self { objects, free_list }
     }
@@ -274,7 +272,11 @@ pub fn demo() {
 
     println!("\n=== Object Pool ===");
     let mut pool: ObjectPool<Vec<u8>> = ObjectPool::new(5);
-    println!("Available: {}/{}", pool.available_count(), pool.total_capacity());
+    println!(
+        "Available: {}/{}",
+        pool.available_count(),
+        pool.total_capacity()
+    );
     let (idx, buf) = pool.acquire().unwrap();
     buf.extend_from_slice(b"hello");
     println!("Acquired slot {idx}, buf = {:?}", buf);

@@ -160,7 +160,10 @@ impl WeightedUnionFind {
 // Application: Kruskal's MST
 // =============================================================================
 
-pub fn kruskal_mst(num_nodes: usize, edges: &mut Vec<(u64, usize, usize)>) -> (u64, Vec<(usize, usize, u64)>) {
+pub fn kruskal_mst(
+    num_nodes: usize,
+    edges: &mut Vec<(u64, usize, usize)>,
+) -> (u64, Vec<(usize, usize, u64)>) {
     // Sort edges by weight
     edges.sort_by_key(|e| e.0);
 
@@ -222,8 +225,8 @@ pub fn demo() {
 
     println!("\n=== Weighted Union-Find ===");
     let mut wuf = WeightedUnionFind::new(5);
-    wuf.union(0, 1, 3);  // weight(0) - weight(1) = 3
-    wuf.union(1, 2, 5);  // weight(1) - weight(2) = 5
+    wuf.union(0, 1, 3); // weight(0) - weight(1) = 3
+    wuf.union(1, 2, 5); // weight(1) - weight(2) = 5
     println!("diff(0, 2) = {:?}", wuf.diff(0, 2)); // 3 + 5 = 8
     println!("diff(2, 0) = {:?}", wuf.diff(2, 0)); // -8
 }

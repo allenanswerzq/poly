@@ -23,8 +23,8 @@ struct SkipNode<K: Ord, V> {
 /// A sentinel-headed skip list.
 pub struct SkipList<K: Ord, V> {
     arena: Vec<SkipNode<K, V>>,
-    head: usize,       // sentinel node index
-    level: usize,      // current max level in use
+    head: usize,  // sentinel node index
+    level: usize, // current max level in use
     len: usize,
 }
 

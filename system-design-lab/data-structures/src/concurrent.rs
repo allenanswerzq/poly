@@ -5,14 +5,14 @@
 //! - Bounded blocking queue (producer-consumer)
 //! - RwLock-protected sorted set
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use parking_lot::{Mutex, RwLock, Condvar};
+use parking_lot::{Condvar, Mutex, RwLock};
 
 // =============================================================================
 // Sharded Concurrent HashMap

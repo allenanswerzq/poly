@@ -3,8 +3,8 @@
 //!
 //! Adjacency list representation with BFS, DFS, Dijkstra, and topological sort.
 
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 // =============================================================================
 // Adjacency List Graph

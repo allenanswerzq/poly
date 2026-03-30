@@ -242,7 +242,11 @@ pub fn demo() {
     let mut st = SegmentTree::from_slice(&data);
     println!("Data: {data:?}");
     println!("Sum [1, 3] = {} (expected {})", st.query(1, 3), 3 + 5 + 7);
-    println!("Sum [0, 5] = {} (expected {})", st.query(0, 5), data.iter().sum::<i64>());
+    println!(
+        "Sum [0, 5] = {} (expected {})",
+        st.query(0, 5),
+        data.iter().sum::<i64>()
+    );
     st.update(2, 5); // data[2] += 5: [1, 3, 10, 7, 9, 11]
     println!("After data[2] += 5:");
     println!("Sum [1, 3] = {} (expected {})", st.query(1, 3), 3 + 10 + 7);
@@ -253,15 +257,31 @@ pub fn demo() {
     lst.range_update(1, 4, 10); // add 10 to [1..=4]
     println!("After [1..=4] += 10:");
     println!("Sum [0, 5] = {} (expected {})", lst.query(0, 5), 36 + 40);
-    println!("Sum [1, 4] = {} (expected {})", lst.query(1, 4), 3 + 5 + 7 + 9 + 40);
+    println!(
+        "Sum [1, 4] = {} (expected {})",
+        lst.query(1, 4),
+        3 + 5 + 7 + 9 + 40
+    );
 
     println!("\n=== Fenwick Tree (BIT) ===");
     let data = vec![1, 3, 5, 7, 9, 11];
     let mut ft = FenwickTree::from_slice(&data);
     println!("Data: {data:?}");
-    println!("Prefix sum [0..=3] = {} (expected {})", ft.prefix_sum(3), 1 + 3 + 5 + 7);
-    println!("Range sum [2, 4] = {} (expected {})", ft.range_sum(2, 4), 5 + 7 + 9);
+    println!(
+        "Prefix sum [0..=3] = {} (expected {})",
+        ft.prefix_sum(3),
+        1 + 3 + 5 + 7
+    );
+    println!(
+        "Range sum [2, 4] = {} (expected {})",
+        ft.range_sum(2, 4),
+        5 + 7 + 9
+    );
     ft.update(2, 5); // data[2] += 5
     println!("After data[2] += 5:");
-    println!("Range sum [2, 4] = {} (expected {})", ft.range_sum(2, 4), 10 + 7 + 9);
+    println!(
+        "Range sum [2, 4] = {} (expected {})",
+        ft.range_sum(2, 4),
+        10 + 7 + 9
+    );
 }
