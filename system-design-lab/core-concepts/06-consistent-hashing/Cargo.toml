@@ -11,3 +11,7 @@ path = "src/main.rs"
 sha2 = { workspace = true }
 md5 = { workspace = true }
 rand = { workspace = true }
+
+[lib]
+name = "consistent_hashing"
+path = "src/lib.rs"
