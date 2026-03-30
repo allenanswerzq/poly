@@ -15,6 +15,7 @@ mod auth_middleware;
 mod backends;
 mod canary;
 mod circuit_breaker;
+mod load_balancing;
 mod pingora_auth;
 mod pingora_cb;
 mod pingora_proxy;
@@ -66,8 +67,12 @@ fn main() {
     println!("━━━ 5. Request Aggregation — BFF Pattern ━━━");
     aggregation::demo_request_aggregation();
 
-    // Demo 6: Weighted Routing / Canary
-    println!("━━━ 6. Weighted Routing — Canary Deployment ━━━");
+    // Demo 6: Load Balancing
+    println!("━━━ 6. Load Balancing — Algorithms & Traffic Shifting ━━━");
+    load_balancing::demo();
+
+    // Demo 7: Weighted Routing / Canary
+    println!("━━━ 7. Weighted Routing — Canary Deployment ━━━");
     canary::demo();
 
     // Summary
@@ -84,7 +89,8 @@ fn main() {
 │ Aggregation      │ Fan-out + combine (reduce client RTTs)     │
 │ SSL Termination  │ HTTPS outside, HTTP inside                 │
 │ Caching          │ Cache responses at the edge                │
-│ Load Balancing   │ Distribute across backend replicas         │
+│ Load Balancing   │ Distribute across backend replicas (WRR,   │
+│                  │ least-conns, P2C, IP hash, etc.)           │
 └──────────────────┴────────────────────────────────────────────┘
 
 Real-world: nginx (reverse proxy) → Kong/Envoy (API gateway) → Istio (service mesh)
