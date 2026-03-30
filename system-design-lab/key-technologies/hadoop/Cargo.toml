@@ -1,0 +1,11 @@
+[package]
+name = "mini-hadoop"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mini-hadoop"
+path = "src/main.rs"
+
+[dependencies]
+rand = { workspace = true }

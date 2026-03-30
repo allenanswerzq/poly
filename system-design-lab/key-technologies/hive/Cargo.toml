@@ -1,0 +1,11 @@
+[package]
+name = "mini-hive"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mini-hive"
+path = "src/main.rs"
+
+[dependencies]
+rand = { workspace = true }

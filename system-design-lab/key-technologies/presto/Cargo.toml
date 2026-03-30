@@ -1,0 +1,11 @@
+[package]
+name = "mini-presto"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mini-presto"
+path = "src/main.rs"
+
+[dependencies]
+rand = { workspace = true }

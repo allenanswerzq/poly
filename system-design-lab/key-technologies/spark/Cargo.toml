@@ -1,0 +1,11 @@
+[package]
+name = "mini-spark"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mini-spark"
+path = "src/main.rs"
+
+[dependencies]
+rand = { workspace = true }
