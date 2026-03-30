@@ -42,6 +42,7 @@ members = [
     "patterns/scaling-writes",
     "patterns/real-time-updates",
     "patterns/handling-contention",
+    "data-structures",
 ]
 
 [workspace.dependencies]

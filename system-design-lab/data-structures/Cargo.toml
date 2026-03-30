@@ -1,0 +1,13 @@
+[package]
+name = "data-structures"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "data-structures"
+path = "src/main.rs"
+
+[dependencies]
+rand = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
