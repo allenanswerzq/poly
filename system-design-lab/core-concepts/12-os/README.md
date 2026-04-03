@@ -180,6 +180,74 @@ Running out of ports?
   Solution: connection pooling (don't open new connection per request)
 ```
 
+### Incoming vs Outgoing Connections — The Full Picture
+
+```
+Incoming (server-side):  Users → Your App
+  Problem:  100K users connecting simultaneously
+  Solution: epoll/kqueue event loop + load balancer
+
+Outgoing (client-side):  Your App → Database / Redis / APIs
+  Problem:  too many connections opened, port exhaustion, handshake cost
+  Solution: connection pool (reuse N pre-opened connections)
+```
+
+```
+How the server handles incoming:
+
+  Thread-per-connection (Apache):
+    100K connections → 100K threads → ~1TB RAM → DIES
+
+  Event loop (Nginx, Node.js, Tokio):
+    100K connections → 1 thread + epoll → ~1GB RAM → FINE
+
+  Async tasks (Go, Rust/Tokio):
+    100K connections → 8 OS threads + 100K tasks → ~200MB → GREAT
+```
+
+```
+How the app manages outgoing (connection pool):
+
+  Without pool:
+    10K req/s → 10K new TCP connections/s → port exhaustion in 6 seconds
+
+  With pool (20 connections):
+    10K req/s → 20 reused connections → each handles ~500 queries/s
+    Ports used: 20 (forever). No exhaustion.
+
+  ┌──────────────────────────────────────────────┐
+  │  Connection Pool (20 connections to DB)       │
+  │  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ... ┌────┐    │
+  │  │conn│ │conn│ │conn│ │conn│     │conn│    │
+  │  │ 1  │ │ 2  │ │ 3  │ │ 4  │     │ 20 │    │
+  │  └────┘ └────┘ └────┘ └────┘     └────┘    │
+  │   busy   busy   idle   idle       idle      │
+  └──────────────────────────────────────────────┘
+  Request arrives → borrow idle conn → query → return to pool
+  All busy? → wait in queue (or timeout with error)
+```
+
+```
+                    Incoming (server-side)              Outgoing (client-side)
+                    Users → Your App                    Your App → Database
+┌─────────────────────────────────────────┬────────────────────────────────────┐
+│ Problem     │ Too many simultaneous     │ Port exhaustion, handshake cost,  │
+│             │ clients connecting        │ overloading backend               │
+├─────────────┼───────────────────────────┼────────────────────────────────────┤
+│ Solution    │ epoll/kqueue event loop   │ Connection pool (reuse N conns)   │
+│             │ + load balancer           │                                    │
+├─────────────┼───────────────────────────┼────────────────────────────────────┤
+│ Who waits?  │ OS queues (SYN, accept)   │ App waits for pool slot           │
+├─────────────┼───────────────────────────┼────────────────────────────────────┤
+│ Key limit   │ File descriptors (ulimit) │ Ephemeral ports (~64K)            │
+├─────────────┼───────────────────────────┼────────────────────────────────────┤
+│ Scaling     │ More servers behind LB    │ Bigger pool (don't overload DB)   │
+├─────────────┼───────────────────────────┼────────────────────────────────────┤
+│ Typical     │ Nginx: 10K+ per worker    │ DB pool: 10-200 connections       │
+│ numbers     │ Tokio: 100K+ per process  │ HTTP pool: 50-200 connections     │
+└─────────────┴───────────────────────────┴────────────────────────────────────┘
+```
+
 ### Zero-Copy (sendfile)
 ```
 Without zero-copy:
