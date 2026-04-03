@@ -277,24 +277,166 @@ by using M:N threading (many tasks, few OS threads)
 
 ## 6. Containers & cgroups
 
+A container is NOT a VM. It's just a **regular Linux process** with two kernel features applied:
+
 ```
-Docker container = process with resource limits
+Namespaces = what can the process SEE?   (isolation)
+cgroups    = how much can it USE?        (resource limits)
 
+Together they create the illusion of a separate machine.
+```
+
+### Namespaces — Isolation (What the process sees)
+
+Each namespace type hides a different part of the system:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ Namespace    │ Isolates                  │ What container sees       │
+├──────────────┼───────────────────────────┼───────────────────────────┤
+│ PID          │ Process IDs               │ Own PID tree (PID 1)      │
+│ Mount (mnt)  │ Filesystem mounts         │ Own / with bind mounts    │
+│ Network (net)│ Network stack             │ Own IP, ports, interfaces │
+│ UTS          │ Hostname                  │ Own hostname              │
+│ IPC          │ Shared memory, semaphores │ Own IPC resources         │
+│ User         │ User/group IDs            │ UID 0 (root) inside,     │
+│              │                           │ unprivileged outside      │
+│ Cgroup       │ Cgroup root view          │ Sees only its own cgroup  │
+└──────────────┴───────────────────────────┴───────────────────────────┘
+```
+
+```
+Without namespaces:
+  Process sees ALL other processes, ALL mount points, host's real IP
+
+With namespaces:
+  Process sees only its OWN process tree, mounts, network
+  Thinks it's running on its own machine
+
+  Host:                          Container sees:
+  ┌─────────────────────┐       ┌─────────────────────┐
+  │ PID 1: systemd      │       │ PID 1: my-app       │ ← thinks it's PID 1
+  │ PID 42: sshd        │       │ PID 2: worker       │
+  │ PID 100: my-app ◄───┼───┐   └─────────────────────┘
+  │ PID 101: worker  ◄──┼───┘     (can't see systemd, sshd, etc.)
+  └─────────────────────┘
+```
+
+### Mount namespace — how Docker volumes work
+
+```
+Container gets its own filesystem view via mount namespace:
+
+  Host filesystem:           Container mount namespace:
+  /                          /                     ← overlayfs (image layers)
+  ├── home/yibai/data/       ├── app/              ← from image layer
+  ├── var/lib/docker/        ├── data/ ◄───────────── bind mount from host
+  └── ...                    ├── tmp/              ← tmpfs (RAM, ephemeral)
+                             └── etc/hosts ◄──────── bind mount single file
+
+  docker run -v /home/yibai/data:/data  myimage
+  ↓
+  Under the hood:
+    1. Create new mount namespace (unshare(CLONE_NEWNS))
+    2. Mount overlayfs for root (read-only image layers + writable layer)
+    3. mount --bind /home/yibai/data /data  (folder bind mount)
+    4. mount -t tmpfs tmpfs /tmp            (RAM-backed temp)
+    5. mount --bind /etc/resolv.conf ...    (DNS config injection)
+```
+
+### cgroups — Resource Limits (How much the process can use)
+
+Namespaces don't limit resource usage — a namespaced process could still eat 100%
+CPU and all RAM. **cgroups** enforce the limits:
+
+```
 cgroups (control groups):
-  ├── CPU: max 2 cores for this process
-  ├── Memory: max 4GB (OOM if exceeded)
-  ├── I/O: max 100MB/s disk bandwidth
-  └── Network: bandwidth limits
+  ├── cpu
+  │     cpu.max = "200000 100000"    → max 2 cores (200ms per 100ms period)
+  │     cpu.weight = 100             → relative CPU share
+  ├── memory
+  │     memory.max = 4294967296      → 4 GB hard limit
+  │     memory.high = 3221225472     → 3 GB (throttle before OOM)
+  │     memory.swap.max = 0          → no swap (common in production)
+  ├── io
+  │     io.max = "8:0 rbps=104857600"  → 100 MB/s read from /dev/sda
+  └── pids
+        pids.max = 1000              → max 1000 processes (fork bomb protection)
 
-Namespaces:
-  ├── PID: container sees its own process tree (PID 1)
-  ├── Network: own IP address, ports
-  ├── Mount: own filesystem view
-  └── User: own root user (unprivileged on host)
+Enforcement:
+  CPU exceeded?    → process gets throttled (scheduled less)
+  Memory exceeded? → OOM killer kills a process in the cgroup
+  PIDs exceeded?   → fork() returns EAGAIN
+```
 
-Container ≠ VM:
-  VM: full OS kernel + hypervisor overhead
-  Container: shared kernel, just namespace isolation, near-zero overhead
+### How they connect — Docker puts them together
+
+```
+docker run --cpus=2 --memory=4g -v /data:/data -p 8080:80 myapp
+
+  What Docker does:
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ 1. Fork a new process                                          │
+  │                                                                 │
+  │ 2. Apply NAMESPACES (isolation):                                │
+  │    ├── PID namespace    → app sees itself as PID 1              │
+  │    ├── Mount namespace  → overlayfs root + bind mount /data     │
+  │    ├── Network namespace→ own eth0, own IP, port 80 mapped      │
+  │    ├── UTS namespace    → own hostname (container ID)           │
+  │    └── User namespace   → root inside, nobody outside           │
+  │                                                                 │
+  │ 3. Apply CGROUPS (limits):                                      │
+  │    ├── cpu.max = 2 cores                                        │
+  │    ├── memory.max = 4GB                                         │
+  │    └── pids.max = 4096                                          │
+  │                                                                 │
+  │ 4. exec() the application binary                                │
+  │                                                                 │
+  │ Result: process thinks it's on its own machine with 2 CPU, 4GB  │
+  │         Actually just a regular process with kernel restrictions │
+  └─────────────────────────────────────────────────────────────────┘
+```
+
+### Container vs VM
+
+```
+┌──────────────────┬───────────────────────┬───────────────────────┐
+│                  │ Container             │ VM                    │
+├──────────────────┼───────────────────────┼───────────────────────┤
+│ Isolation via    │ Namespaces + cgroups  │ Hypervisor + own kernel│
+│ Kernel           │ Shared with host      │ Separate guest kernel │
+│ Startup time     │ ~100ms               │ ~30-60 seconds        │
+│ Memory overhead  │ ~10 MB               │ ~200+ MB (kernel+OS)  │
+│ Isolation level  │ Process-level         │ Hardware-level        │
+│ Security         │ Weaker (shared kernel)│ Stronger (separate)   │
+│ Density          │ 100s per host         │ 10s per host          │
+│ Use case         │ Microservices, CI/CD  │ Multi-tenant, legacy  │
+└──────────────────┴───────────────────────┴───────────────────────┘
+
+Firecracker (AWS Lambda): micro-VM — VM-level isolation,
+  container-like speed (~125ms boot). Best of both worlds.
+```
+
+### cgroups v1 vs v2
+
+```
+cgroups v1 (legacy):
+  Each resource type is a separate hierarchy:
+    /sys/fs/cgroup/cpu/docker/container-abc/
+    /sys/fs/cgroup/memory/docker/container-abc/
+    /sys/fs/cgroup/blkio/docker/container-abc/
+  Problem: a process can be in different cgroups for CPU vs memory.
+  Complex, hard to manage.
+
+cgroups v2 (modern, default since ~2022):
+  Unified single hierarchy:
+    /sys/fs/cgroup/docker/container-abc/
+      ├── cpu.max
+      ├── memory.max
+      ├── io.max
+      └── pids.max
+  Simpler, all limits in one place.
+  Required by: newer Docker, Kubernetes, systemd.
 ```
 
 ## Interview Talking Points
