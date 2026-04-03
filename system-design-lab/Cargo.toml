@@ -9,6 +9,7 @@ members = [
     "core-concepts/06-consistent-hashing",
     "core-concepts/08-database-indexing",
     "core-concepts/10-gateways",
+    "core-concepts/11-auth",
     "core-concepts/17-distributed-protocols",
     "real-designs/01-url-shortener",
     "real-designs/02-rate-limiter",

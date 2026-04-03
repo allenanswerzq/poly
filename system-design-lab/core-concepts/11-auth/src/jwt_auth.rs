@@ -33,7 +33,7 @@ struct Claims {
 pub fn demo() {
     println!("\n  ═══ JWT Auth (jsonwebtoken) ═══\n");
 
-    // In production: load from environment variable, NEVER hardcode
+    // In production server side secret: load from environment variable, NEVER hardcode
     let secret = "my-super-secret-key-at-least-32-bytes";
 
     // ── Create a JWT (what happens at login) ──

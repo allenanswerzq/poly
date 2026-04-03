@@ -283,3 +283,164 @@ When discussing auth in a system design interview:
 | **CSRF** | SameSite cookies + CSRF token for form submissions |
 | **Rate limiting** | Per-user and per-IP at the gateway |
 | **Least privilege** | Services only get permissions they need |
+
+---
+
+## 8. CORS (Cross-Origin Resource Sharing)
+
+**Problem**: Browser blocks `frontend.com` from calling `api.backend.com` by default
+(same-origin policy). Your API needs to explicitly allow trusted origins.
+
+```
+Browser at https://myapp.com makes fetch() to https://api.myapp.com:
+
+1. Browser sends preflight: OPTIONS /api/data
+2. Server responds with:
+     Access-Control-Allow-Origin: https://myapp.com    ← "you're allowed"
+     Access-Control-Allow-Methods: GET, POST, PUT
+     Access-Control-Allow-Headers: Authorization, Content-Type
+3. Browser proceeds with the actual request ✓
+```
+
+### Why `Access-Control-Allow-Origin: *` is dangerous
+
+```
+Your API at api.mybank.com with: Access-Control-Allow-Origin: *
+
+ANY site can now call your API:
+  1. User visits evil.com
+  2. evil.com's JavaScript calls api.mybank.com/transfer
+  3. Browser sends the request WITH the user's bank cookies
+  4. API processes it — money gone
+
+With specific origin:
+  1. evil.com tries to call api.mybank.com/transfer
+  2. Browser checks: is evil.com in Access-Control-Allow-Origin?
+  3. No → browser BLOCKS the response ✓
+```
+
+### Proper CORS setup
+
+```
+# Good — whitelist specific origins
+Access-Control-Allow-Origin: https://myapp.com
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE
+Access-Control-Allow-Headers: Authorization, Content-Type
+Access-Control-Allow-Credentials: true     # needed for cookies
+
+# Bad — allows everyone
+Access-Control-Allow-Origin: *
+# (also: can't use * with Allow-Credentials: true — browser rejects it)
+```
+
+**When `*` is OK**: Public read-only APIs with no auth (weather API, CDN fonts, open data).
+
+---
+
+## 9. CSRF (Cross-Site Request Forgery)
+
+**Problem**: User is logged into `bank.com`. They visit `evil.com`, which silently submits
+a form to `bank.com`. Browser attaches bank's session cookie automatically → bank thinks
+it's the real user.
+
+```
+On evil.com:
+  <form action="https://bank.com/transfer" method="POST">
+    <input type="hidden" name="to" value="attacker" />
+    <input type="hidden" name="amount" value="10000" />
+  </form>
+  <script>document.forms[0].submit();</script>
+
+User visits evil.com → browser auto-submits to bank.com
+→ bank sees valid session cookie → transfers $10,000 to attacker
+```
+
+### Defense 1: SameSite Cookies
+
+```
+Set-Cookie: session=abc123; SameSite=Lax; Secure; HttpOnly
+```
+
+| SameSite value | Cookie sent from evil.com → bank.com? |
+|---|---|
+| `None` | Yes — vulnerable! |
+| `Lax` | Only for top-level GET navigation, blocks POST forms ✓ |
+| `Strict` | Never sent cross-site (safest, but breaks OAuth redirects) |
+
+`Lax` is the modern browser default and blocks the POST attack above.
+
+### Defense 2: CSRF Token
+
+Server embeds a random token in every form. Attacker can't read it (same-origin policy).
+
+```
+bank.com's real form:
+  <form action="/transfer" method="POST">
+    <input type="hidden" name="csrf_token" value="a8f3b2c9d1e4..." />
+    <input name="to" />
+    <input name="amount" />
+  </form>
+
+Server checks: POST csrf_token matches what I generated?
+  bank.com form  → has the real token → ✓
+  evil.com form  → can't read bank.com's page → doesn't know the token → ✗
+```
+
+### Best practice: use both
+
+```
+Set-Cookie: session=abc123; SameSite=Lax; Secure; HttpOnly
++ CSRF token in every state-changing form/request
+```
+
+| Attack vector | SameSite=Lax | CSRF token | Both |
+|---|---|---|---|
+| POST form from evil.com | Blocked ✓ | Blocked ✓ | Blocked ✓ |
+| GET link from evil.com | Cookie sent | No token → blocked | Blocked ✓ |
+| Subdomain attack | May bypass | Blocked ✓ | Blocked ✓ |
+| Old browser (no SameSite) | Vulnerable | Blocked ✓ | Blocked ✓ |
+
+### CORS vs CSRF — they're different things
+
+```
+CORS  = server tells browser which OTHER SITES can call its API
+CSRF  = attacker tricks YOUR BROWSER into making requests you didn't intend
+
+CORS protects API endpoints (fetch/XHR calls)
+CSRF protects form submissions and cookie-authenticated actions
+Both are needed — they're complementary, not alternatives
+```
+
+---
+
+## 10. Password Storage
+
+**Never** store passwords in plaintext or with fast hashes (MD5, SHA-256).
+
+```
+Plaintext:  password123          ← database leak = game over
+MD5:        482c811da5d5b4bc...  ← cracked in seconds (GPU does 10B/sec)
+SHA-256:    ef92b778bafe77...    ← cracked in seconds (still too fast)
+bcrypt:     $2b$12$LJ3m4ys...   ← takes ~250ms per attempt (100B years to brute-force)
+argon2:     $argon2id$v=19$...   ← ~500ms + 64MB RAM per attempt (GPU can't parallelize)
+```
+
+**Why bcrypt/argon2?** They're **intentionally slow**:
+
+| | SHA-256 | bcrypt | argon2 |
+|---|---|---|---|
+| Speed (GPU) | 10 billion/sec | ~30,000/sec | ~1,000/sec |
+| 8-char passwords | Cracked in ~20 sec | ~200 years | ~6,000 years |
+| Memory per hash | ~0 bytes | ~4 KB | 64 MB+ (configurable) |
+| GPU resistant | No | Somewhat | Very (needs lots of RAM) |
+
+```
+# Good
+password_hash = argon2.hash(password, memory=65536, iterations=3)
+
+# Bad
+password_hash = sha256(password + salt)   # still 10 billion guesses/sec on GPU
+```
+
+**argon2** is the current best practice (won the 2015 Password Hashing Competition).
+**bcrypt** is still fine and more widely deployed.
