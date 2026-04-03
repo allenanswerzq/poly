@@ -109,14 +109,50 @@ Per-thread model (Apache):
   1 thread per connection → 100K threads → too much memory
 
 Event-driven (Nginx, Node.js, Tokio):
-  1 thread watches 100K file descriptors with epoll()
+  1 thread watches 100K file descriptors with epoll/kqueue
   epoll_wait() → "these 50 sockets have data ready" → process them
   No thread-per-connection overhead
 
-io_uring (Linux 5.1+):
-  Async I/O with shared ring buffers between user and kernel
-  Even less overhead than epoll for high-throughput I/O
-  Used by: modern databases, Tokio (experimental)
+Platform-specific mechanisms:
+
+  select() (1983, all platforms):
+    Pass a list of FDs, kernel scans ALL of them each call → O(n)
+    Limited to 1024 FDs. Too slow for modern workloads.
+
+  poll() (1986, all platforms):
+    Like select but no FD limit. Still O(n) per call.
+
+  epoll (Linux 2.5.44+):
+    Kernel maintains the FD set. Only returns READY ones → O(ready)
+    Three calls: epoll_create, epoll_ctl(add/remove), epoll_wait
+    Used by: Nginx, Tokio, Node.js (on Linux)
+
+  kqueue (BSD/macOS):
+    Same idea as epoll, but for BSD-family OSes (macOS, FreeBSD)
+    One syscall: kevent() — both register interest AND poll for events
+    More general than epoll: works for sockets, files, signals, timers
+    Used by: Nginx, Tokio, Node.js (on macOS)
+
+  io_uring (Linux 5.1+):
+    True async I/O with shared ring buffers between user and kernel
+    Submit requests + reap completions with ZERO syscalls (shared memory)
+    Handles network AND disk I/O (epoll is network only)
+    Used by: modern databases, Tokio (experimental)
+
+  ┌──────────┬──────────┬───────────┬──────────────┬───────────────┐
+  │          │ Platform │ Scaling   │ Disk I/O?    │ Syscalls/op   │
+  ├──────────┼──────────┼───────────┼──────────────┼───────────────┤
+  │ select   │ All      │ O(n)      │ No           │ 1 per poll    │
+  │ poll     │ All      │ O(n)      │ No           │ 1 per poll    │
+  │ epoll    │ Linux    │ O(ready)  │ No           │ 1 per poll    │
+  │ kqueue   │ BSD/Mac  │ O(ready)  │ Partial      │ 1 per poll    │
+  │ io_uring │ Linux    │ O(ready)  │ Yes          │ 0 (ring buf)  │
+  └──────────┴──────────┴───────────┴──────────────┴───────────────┘
+
+Cross-platform libraries abstract these away:
+  libuv (Node.js):        epoll on Linux, kqueue on macOS, IOCP on Windows
+  mio (Rust/Tokio):       epoll on Linux, kqueue on macOS
+  libevent/libev:         epoll/kqueue/select depending on OS
 ```
 
 ## 4. Networking (OS Level)
