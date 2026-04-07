@@ -31,6 +31,211 @@ Parent process → fork() → child process (copy of parent)
   - This is why PostgreSQL can fork quickly even with large shared buffers
 ```
 
+### IPC — Inter-Process Communication
+
+Threads share memory, so they just read/write shared variables (with locks).
+Processes have **separate address spaces** — they CANNOT read each other's memory.
+IPC is every mechanism the OS provides for processes to exchange data.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Mechanism      │ Speed      │ How it works         │ Used by            │
+├────────────────┼────────────┼──────────────────────┼────────────────────┤
+│ Pipe           │ Fast       │ Byte stream, 1-way   │ Shell (cmd1 | cmd2)│
+│ Unix socket    │ Fast       │ Bidirectional stream  │ Docker, Nginx, DBs │
+│ TCP socket     │ Medium     │ Bidirectional, network│ Microservices, RPC │
+│ Shared memory  │ Fastest    │ Direct memory access  │ PostgreSQL, Chrome │
+│ Memory-mapped  │ Fastest    │ mmap same file/region │ Database engines   │
+│ Signal         │ Instant    │ Notification only     │ SIGTERM, SIGKILL   │
+│ Message queue  │ Medium     │ Structured messages   │ POSIX mq, System V │
+│ Eventfd        │ Fast       │ Counter notification  │ KVM, io_uring      │
+└────────────────┴────────────┴──────────────────────┴────────────────────┘
+```
+
+**Pipes — the simplest IPC:**
+
+```
+Unidirectional byte stream. Created with pipe() syscall.
+  Returns two file descriptors: fd[0] (read end), fd[1] (write end).
+
+  Parent process                   Child process
+  ┌──────────────┐                ┌──────────────┐
+  │ write(fd[1], │───── pipe ────►│ read(fd[0],  │
+  │   "hello")   │  kernel buffer │   buf, 5)    │
+  └──────────────┘   (64KB default)└──────────────┘
+
+  Shell pipes are exactly this:
+    ls -la | grep ".rs" | wc -l
+    ↓
+    3 processes connected by 2 pipes:
+      ls → pipe → grep → pipe → wc
+
+  Named pipe (FIFO):
+    mkfifo /tmp/my_pipe
+    Process A: echo "data" > /tmp/my_pipe
+    Process B: cat /tmp/my_pipe
+    Persists in filesystem. Any process can open it by name.
+    Used by: some legacy inter-service communication.
+
+  Limitations:
+    - Unidirectional (need 2 pipes for bidirectional)
+    - Only between related processes (unless named pipe)
+    - No message boundaries — just raw bytes
+    - Pipe buffer full (64KB) → writer blocks
+```
+
+**Unix Domain Sockets — the workhorse of local IPC:**
+
+```
+Like a TCP socket, but for processes on the SAME machine.
+No network stack overhead (no TCP/IP headers, no checksums).
+
+  Two types:
+    SOCK_STREAM:  like TCP — reliable byte stream (most common)
+    SOCK_DGRAM:   like UDP — message boundaries, no connection
+
+  Server (bind + listen):
+    let listener = UnixListener::bind("/var/run/myapp.sock")?;
+    for stream in listener.incoming() {
+        handle(stream?);
+    }
+
+  Client (connect):
+    let stream = UnixStream::connect("/var/run/myapp.sock")?;
+    stream.write_all(b"hello")?;
+
+  Performance vs TCP loopback (localhost:port):
+    Unix socket: ~2 µs round-trip, zero-copy possible
+    TCP loopback: ~10 µs round-trip, full TCP/IP stack
+    → Unix sockets are ~5x faster for local communication
+
+  Who uses them:
+    Docker:       /var/run/docker.sock   (CLI ↔ daemon)
+    PostgreSQL:   /var/run/postgresql/.s.PGSQL.5432
+    MySQL:        /var/run/mysqld/mysqld.sock
+    Nginx:        upstream php { server unix:/run/php-fpm.sock; }
+    Redis:        unixsocket /var/run/redis/redis.sock
+    X11/Wayland:  display server ↔ GUI apps
+    systemd:      socket activation (pass fd to service)
+
+  Bonus feature — fd passing:
+    Unix sockets can send FILE DESCRIPTORS between processes!
+    Process A opens a file, sends the fd to Process B via the socket.
+    Process B can now read/write that file. No file path needed.
+
+    Used by:
+      - systemd socket activation (systemd opens port 80, passes fd to Nginx)
+      - Container runtimes (pass device fds to containers)
+      - Privilege separation (privileged process opens file, passes to unprivileged)
+```
+
+**Shared Memory — fastest IPC, but most dangerous:**
+
+```
+Two processes map the SAME physical pages into their address spaces.
+No copying at all — both processes read/write the same bytes.
+
+  Process A                    Physical RAM              Process B
+  ┌──────────────┐           ┌──────────────┐          ┌──────────────┐
+  │ 0x7000: ─────┼──────────►│ Page frame 42│◄─────────┼────── :0x9000│
+  │ (mapped)     │           │ shared data   │          │     (mapped) │
+  └──────────────┘           └──────────────┘          └──────────────┘
+
+POSIX shared memory (modern, preferred):
+  // Writer
+  int fd = shm_open("/my_shm", O_CREAT | O_RDWR, 0644);
+  ftruncate(fd, 4096);
+  void* ptr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  memcpy(ptr, data, len);
+
+  // Reader (different process)
+  int fd = shm_open("/my_shm", O_RDONLY, 0);
+  void* ptr = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0);
+  // ptr points to the SAME physical memory
+
+  Lives under: /dev/shm/ (tmpfs mount)
+  $ ls /dev/shm/
+  my_shm    pulse-shm-12345    ...
+
+Who uses it:
+  PostgreSQL:  shared_buffers (default 128MB, often 8-32GB)
+               → ALL postgres worker processes share the page cache
+               → This is why PostgreSQL uses processes, not threads:
+                 crash isolation + shared memory for the buffer pool
+
+  Chrome:      renderer processes share bitmaps with browser process
+
+  CUDA/GPU:    host-device shared memory for zero-copy transfers
+
+  Database:    shared buffer pools, WAL buffers
+
+The danger:
+  Shared memory has NO built-in synchronization.
+  Two processes writing simultaneously → data corruption.
+  YOU must add synchronization (semaphores, mutexes in shared mem).
+
+  This is why higher-level abstractions (sockets, channels) are preferred.
+  Shared memory is for when you NEED the performance.
+```
+
+**Signals — lightweight notifications:**
+
+```
+Signals are async notifications sent to a process. No data payload.
+
+  Common signals:
+  ┌──────────┬────────┬────────────────────────────────────────────┐
+  │ Signal   │ Number │ Purpose                                    │
+  ├──────────┼────────┼────────────────────────────────────────────┤
+  │ SIGTERM  │ 15     │ "Please shut down." Can be caught/handled. │
+  │ SIGKILL  │ 9      │ "Die NOW." Cannot be caught. Kernel kills. │
+  │ SIGINT   │ 2      │ Ctrl+C from terminal.                      │
+  │ SIGHUP   │ 1      │ "Reload config." Nginx, HAProxy use this. │
+  │ SIGUSR1  │ 10     │ User-defined. Log rotation, debug dump.    │
+  │ SIGCHLD  │ 17     │ Child process died. Parent must wait().    │
+  │ SIGPIPE  │ 13     │ Write to broken pipe. Default: kill.       │
+  │ SIGSTOP  │ 19     │ Pause process. Cannot be caught.           │
+  │ SIGCONT  │ 18     │ Resume paused process.                     │
+  └──────────┴────────┴────────────────────────────────────────────┘
+
+  kill -TERM <pid>     # polite shutdown (SIGTERM)
+  kill -9 <pid>        # forced kill (SIGKILL) — last resort!
+  kill -HUP <pid>      # config reload (Nginx: nginx -s reload does this)
+
+  Docker: sends SIGTERM first, waits 10s, then SIGKILL
+  Kubernetes: sends SIGTERM, waits terminationGracePeriodSeconds (30s default),
+              then SIGKILL.
+
+  In Rust (tokio):
+    use tokio::signal;
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            println!("shutting down gracefully...");
+            // drain connections, flush buffers
+        }
+    }
+```
+
+**Choosing the right IPC:**
+
+```
+                    Need speed?   Structured   Cross-machine?   Complexity
+                                  messages?
+  ──────────────────────────────────────────────────────────────────────────
+  Shared memory      FASTEST       No            No              High
+  Unix socket        Fast          Yes (stream)  No              Low
+  Pipe               Fast          No            No              Lowest
+  TCP socket         Medium        Yes           YES             Low
+  Message queue      Medium        Yes           No              Medium
+
+  Rule of thumb:
+    Same machine, need speed?     → Unix socket (or shared memory if extreme)
+    Same machine, simple?         → Pipe
+    Different machines?           → TCP socket (or gRPC/HTTP over TCP)
+    Parent ↔ child, one-way?      → Pipe
+    Need pub/sub or persistence?  → Message broker (Redis, Kafka — not OS IPC)
+```
+
 ## 2. Memory Management
 
 ### Virtual Memory
