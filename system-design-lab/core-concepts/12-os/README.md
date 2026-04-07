@@ -101,6 +101,134 @@ fsync():
   This is what makes database commits durable
 ```
 
+### Mounting — How Filesystems Become Visible
+
+```
+A disk partition is just raw bytes. Mounting ATTACHES a filesystem
+(on a disk/partition/network/RAM) to a DIRECTORY in the file tree,
+so you can actually read and write files on it.
+
+  Before mount:                     After mount:
+  /                                 /
+  ├── home/                         ├── home/
+  │   └── (empty)                   │   └── yibai/        ← files from /dev/sdb1!
+  ├── mnt/                          ├── mnt/
+  └── dev/                          └── dev/
+      ├── sda1 (root disk)              ├── sda1
+      └── sdb1 (second disk, raw)       └── sdb1
+
+  mount /dev/sdb1 /home
+  ↓
+  "Take the filesystem on /dev/sdb1, make it accessible at /home"
+```
+
+**Everything is a mount.** Even your root filesystem:
+
+```
+Boot process:
+  1. Kernel loads, has NO filesystem
+  2. Mounts root filesystem: mount /dev/sda1 /       ← this is THE fundamental mount
+  3. Reads /etc/fstab for other mounts
+  4. Mounts each entry:
+       /dev/sdb1   /home        ext4    defaults    0 2
+       /dev/sdc1   /var/lib/pg  xfs     noatime     0 2
+       tmpfs       /tmp         tmpfs   size=4G     0 0
+       proc        /proc        proc    defaults    0 0
+```
+
+**The VFS (Virtual Filesystem) layer:**
+
+```
+Every file operation goes through VFS — the kernel's filesystem abstraction:
+
+  Application: open("/home/yibai/data.txt")
+       │
+       ▼
+  VFS: "which mount covers /home?" → /dev/sdb1 (ext4)
+       │
+       ▼
+  ext4 driver: find inode, read blocks from /dev/sdb1
+       │
+       ▼
+  Block layer → disk hardware
+
+VFS is why you can mix filesystem types seamlessly:
+  /        → ext4 (on SSD)
+  /home    → xfs  (on HDD)
+  /tmp     → tmpfs (in RAM)
+  /mnt/nfs → NFS  (over network)
+  /proc    → procfs (virtual, kernel-generated)
+
+  To your code, they're all just files. open(), read(), write() — same API.
+```
+
+**Mount types you'll encounter:**
+
+```
+┌─────────────────┬──────────────────────────────────────────────────────┐
+│ Type            │ What it does                                         │
+├─────────────────┼──────────────────────────────────────────────────────┤
+│ Block device    │ mount /dev/sda1 /mnt                                │
+│                 │ Standard: attach a disk partition                     │
+│                 │                                                      │
+│ Bind mount      │ mount --bind /src /dst                              │
+│                 │ Same filesystem, visible at TWO places               │
+│                 │ Docker volumes use this: -v /host/path:/container/path│
+│                 │                                                      │
+│ tmpfs           │ mount -t tmpfs tmpfs /tmp -o size=2G                │
+│                 │ RAM-backed filesystem. Fast, gone on reboot.         │
+│                 │ Used for: /tmp, /run, Docker's container layer       │
+│                 │                                                      │
+│ overlayfs       │ mount -t overlay overlay -o lower=a,upper=b,work=w  │
+│                 │ Layers multiple directories into one view.           │
+│                 │ Docker images use this: read-only layers + writable  │
+│                 │                                                      │
+│ NFS             │ mount -t nfs server:/export /mnt/data               │
+│                 │ Network filesystem. Remote disk appears local.       │
+│                 │                                                      │
+│ procfs          │ mount -t proc proc /proc                            │
+│                 │ Virtual: kernel exposes process info as files.       │
+│                 │ /proc/cpuinfo, /proc/[pid]/status, etc.             │
+│                 │                                                      │
+│ sysfs           │ mount -t sysfs sysfs /sys                           │
+│                 │ Virtual: kernel exposes hardware/driver info.        │
+│                 │ /sys/class/net/, /sys/block/, etc.                   │
+└─────────────────┴──────────────────────────────────────────────────────┘
+```
+
+**Mount propagation (affects containers):**
+
+```
+When you mount something INSIDE a mount namespace, does it show up outside?
+
+  Propagation type   Behavior
+  ─────────────────────────────────────────────────────
+  private            Mount events don't propagate at all.
+                     Default for Docker containers.
+
+  shared             Mount events propagate in BOTH directions.
+                     Host mount → visible in container, and vice versa.
+
+  slave              Host → container (one-way).
+                     Container mounts stay private.
+
+  Docker default: private. Container mounts are invisible to host.
+  Kubernetes:     uses bidirectional (shared) for CSI volume plugins.
+```
+
+**Useful commands:**
+
+```bash
+mount                        # list all current mounts
+findmnt                      # tree view of mount hierarchy (much cleaner)
+findmnt -t ext4,xfs          # filter by filesystem type
+df -h                        # disk usage per mount
+lsblk                        # block devices and their mount points
+cat /proc/mounts             # kernel's view of mounts (authoritative)
+mount -o remount,ro /data    # remount read-only without unmounting
+umount /mnt                  # detach filesystem
+```
+
 ### Epoll / Kqueue / io_uring
 ```
 The problem: how to handle 100K network connections?
@@ -369,6 +497,287 @@ Enforcement:
   PIDs exceeded?   → fork() returns EAGAIN
 ```
 
+### What memory.max actually counts (kernel memory accounting)
+
+`memory.max` is NOT just RSS. The kernel tracks all physical memory charged to the cgroup.
+
+```
+What the kernel COUNTS toward memory.max:
+  ┌────────────────────────────────────────────────────────────────────┐
+  │ Category          │ Counted?  │ What it is                        │
+  ├───────────────────┼───────────┼───────────────────────────────────┤
+  │ Anonymous (anon)  │ YES       │ Heap, stack, mmap(MAP_ANONYMOUS)  │
+  │                   │           │ This is basically RSS minus file  │
+  │                   │           │ pages. malloc(), Vec::new(), etc. │
+  │                   │           │                                   │
+  │ File-backed cache │ YES       │ Pages from read()/mmap() of files │
+  │ (page cache)      │           │ Kernel caches file reads in RAM.  │
+  │                   │           │ Charged to the cgroup that read   │
+  │                   │           │ the file first.                   │
+  │                   │           │                                   │
+  │ Kernel memory     │ YES       │ Slab allocations (dentries, inodes│
+  │ (kmem)            │           │ socket buffers, task_structs).    │
+  │                   │           │ cgroups v2 counts this by default.│
+  │                   │           │                                   │
+  │ Shared memory     │ YES       │ shmem, tmpfs. Charged to the     │
+  │ (shmem/tmpfs)     │           │ cgroup that created it.           │
+  │                   │           │                                   │
+  │ Swap              │ SEPARATE  │ Tracked by memory.swap.max,       │
+  │                   │           │ NOT counted in memory.max.        │
+  │                   │           │                                   │
+  │ Huge pages        │ SEPARATE  │ Has its own controller.           │
+  └───────────────────┴───────────┴───────────────────────────────────┘
+```
+
+```
+So memory.max ≈ anon + file cache + kernel slab + shmem
+
+This is LARGER than RSS because it includes page cache.
+This is why your container can hit memory.max even if your
+app's heap is small — the kernel caches file reads in RAM
+and charges them to your cgroup.
+
+Example:
+  Your app uses 500MB heap (anon RSS).
+  It reads 3GB of files from disk → kernel caches them (page cache).
+  memory.current = ~3.5GB → hits 4GB memory.max → OOM killed!
+
+  But wait — page cache is RECLAIMABLE. The kernel can drop it
+  under pressure. So what really happens:
+
+  1. memory.current approaches memory.max
+  2. Kernel tries to RECLAIM page cache first (drop clean file pages)
+  3. If enough is reclaimed → no OOM, app continues
+  4. If NOT enough (too much is anon/dirty) → OOM kill
+```
+
+**RSS vs memory.current vs memory.max:**
+
+```
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ Metric              │ What it measures                           │
+  ├─────────────────────┼────────────────────────────────────────────┤
+  │ VSZ (virtual size)  │ Total virtual address space mapped.        │
+  │                     │ Includes unmapped pages. MEANINGLESS for   │
+  │                     │ actual memory usage. A 64-bit process can  │
+  │                     │ map 128TB and use 10MB.                    │
+  │                     │                                            │
+  │ RSS (Resident Set)  │ Physical pages currently in RAM for this   │
+  │                     │ process. = anon + file-mapped + shared.    │
+  │                     │ Per-PROCESS metric (not cgroup-aware).     │
+  │                     │ Double-counts shared pages! If 2 processes │
+  │                     │ share a 1GB mmap, both report 1GB RSS.     │
+  │                     │                                            │
+  │ PSS (Proportional)  │ Like RSS but shared pages split evenly.    │
+  │                     │ 1GB shared by 2 = 500MB PSS each.          │
+  │                     │ Most accurate per-process metric.           │
+  │                     │ Slow to compute (reads /proc/pid/smaps).   │
+  │                     │                                            │
+  │ memory.current      │ Actual physical memory charged to cgroup.  │
+  │ (cgroup)            │ = anon + file cache + shmem + kmem.        │
+  │                     │ THIS is what memory.max limits.            │
+  │                     │ No double-counting — each page charged     │
+  │                     │ to exactly one cgroup.                     │
+  └─────────────────────┴────────────────────────────────────────────┘
+
+  In summary:
+    VSZ:             virtual, mostly useless
+    RSS:             physical, per-process, double-counts shared
+    PSS:             physical, per-process, fair shared accounting
+    memory.current:  physical, per-cgroup, what the OOM killer uses
+```
+
+**Reading cgroup memory stats:**
+
+```bash
+# Inside a container or for a specific cgroup:
+cat /sys/fs/cgroup/memory.current       # bytes currently used
+cat /sys/fs/cgroup/memory.max           # the limit (memory.max)
+cat /sys/fs/cgroup/memory.stat          # detailed breakdown:
+
+  anon 524288000                         # 500MB heap/stack (non-reclaimable)
+  file 3221225472                        # 3GB page cache (mostly reclaimable)
+  shmem 0                                # shared memory
+  kernel_stack 1048576                   # kernel stack for threads
+  slab_reclaimable 20971520              # kernel slab caches (dentries, etc.)
+  slab_unreclaimable 5242880             # kernel slab (non-reclaimable)
+
+# Per-process:
+cat /proc/<pid>/status | grep -E "Vm|Rss"
+  VmSize:  2048000 kB    ← virtual (don't care)
+  VmRSS:    512000 kB    ← physical resident (useful)
+
+cat /proc/<pid>/smaps_rollup          # PSS (accurate but slow)
+  Pss:      480000 kB
+```
+
+**Why this matters for Docker/Kubernetes:**
+
+```
+docker run --memory=4g myapp
+  → sets memory.max = 4GB
+  → counts EVERYTHING: your app heap + page cache + kernel buffers
+
+Kubernetes:
+  resources:
+    limits:
+      memory: "4Gi"       ← maps to memory.max
+    requests:
+      memory: "2Gi"       ← used for scheduling, not enforcement
+
+Common surprise: "My app only uses 500MB but got OOM-killed at 4GB!"
+  → Page cache from file-heavy workloads (log writing, data processing)
+  → Fix: kernel reclaims page cache, but if your workload keeps
+    reading new files faster than reclaim, you'll still OOM.
+  → Or: set memory.high (soft limit) to trigger reclaim earlier.
+```
+
+### OOM Killer — How the Kernel Decides Who Dies
+
+There are actually **three different OOM killers** on a modern Linux system,
+and they use different metrics:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                    1. KERNEL OOM KILLER (traditional)                 │
+│                    /proc/<pid>/oom_score                              │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│ Triggered when: the ENTIRE SYSTEM runs out of memory (no free pages  │
+│ left, all reclaimable pages exhausted, swap full or disabled).       │
+│                                                                      │
+│ Which process to kill? → oom_score (0 to ~2000)                      │
+│                                                                      │
+│ The kernel computes oom_score based on:                               │
+│   1. Memory usage (RSS) as % of total RAM   ← DOMINANT factor       │
+│      Process using 50% of RAM → base score ~500                      │
+│      Process using 0.1% → base score ~1                              │
+│                                                                      │
+│   2. Adjusted by oom_score_adj (-1000 to +1000)                      │
+│      -1000 = NEVER kill (OOM-immune)                                 │
+│         0  = default                                                 │
+│      +1000 = ALWAYS kill first                                       │
+│                                                                      │
+│   Final: oom_score ≈ (RSS% × 1000) + oom_score_adj                  │
+│   Highest score dies first.                                          │
+│                                                                      │
+│ It does NOT use PSS, memory.current, or cgroup stats.                │
+│ It's a per-process heuristic based on RSS.                           │
+│                                                                      │
+│ Checking scores:                                                     │
+│   cat /proc/<pid>/oom_score           # current computed score       │
+│   cat /proc/<pid>/oom_score_adj       # admin-set adjustment         │
+│   echo -1000 > /proc/<pid>/oom_score_adj  # make OOM-immune         │
+│                                                                      │
+│ Who sets oom_score_adj?                                               │
+│   systemd:     OOMScoreAdjust=-900 in .service file                  │
+│   Kubernetes:  Guaranteed pods → -997, Burstable → 2-999,            │
+│                BestEffort → 1000 (killed first!)                     │
+│   Docker:      --oom-score-adj=N                                     │
+│   sshd, init:  set to -1000 by default (never kill)                  │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                  2. CGROUP OOM KILLER (per-container)                 │
+│                  memory.max enforcement                               │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│ Triggered when: a CGROUP hits its memory.max limit                   │
+│ (not system-wide — just this container/cgroup ran out)               │
+│                                                                      │
+│ What metric? → memory.current >= memory.max                          │
+│   memory.current = anon + file cache + shmem + kmem (as above)       │
+│                                                                      │
+│ The sequence:                                                        │
+│   1. Process in cgroup tries to allocate memory                      │
+│   2. memory.current would exceed memory.max                          │
+│   3. Kernel tries to reclaim: drop clean file pages, write dirty     │
+│   4. If reclaim frees enough → no OOM, allocation succeeds           │
+│   5. If NOT enough → invoke cgroup OOM killer                        │
+│   6. Kill a process WITHIN this cgroup (not other containers!)       │
+│                                                                      │
+│ Which process in the cgroup? Uses oom_score within the cgroup.       │
+│ Usually there's only one main process → it gets killed.              │
+│                                                                      │
+│ This is the most common OOM in production (Docker/K8s).              │
+│ dmesg shows: "Memory cgroup out of memory: Killed process 1234"     │
+│                                                                      │
+│ Docker exit code: 137 (128 + 9 = SIGKILL)                           │
+│   $ docker inspect <container> --format='{{.State.OOMKilled}}'      │
+│   true                                                               │
+│                                                                      │
+│ Kubernetes: pod status = OOMKilled, gets restarted by kubelet.       │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│              3. systemd-oomd (userspace OOM daemon)                   │
+│              Proactive killing BEFORE the system is in crisis         │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│ Problem with kernel OOM: it triggers at the LAST moment when the     │
+│ system is already thrashing and barely responsive. By then, the      │
+│ system may be so slow it takes minutes to recover.                   │
+│                                                                      │
+│ systemd-oomd runs as a userspace daemon and acts EARLIER.            │
+│                                                                      │
+│ What metrics does it use?                                            │
+│                                                                      │
+│   1. memory.pressure (PSI — Pressure Stall Information):             │
+│      "How much time are processes STALLED waiting for memory?"       │
+│                                                                      │
+│      cat /sys/fs/cgroup/some.slice/memory.pressure                   │
+│        some avg10=45.00 avg60=30.00 avg300=20.00 total=123456789    │
+│        full avg10=10.00 avg60=5.00  avg300=2.00  total=23456789     │
+│                                                                      │
+│      "some": at least one task stalled for memory (reclaim, etc.)   │
+│      "full": ALL tasks stalled (nothing productive happening)        │
+│                                                                      │
+│      avg10 = % of the last 10 seconds spent stalled.                │
+│      avg10=45 means "45% of the last 10s, tasks were memory-stalled"│
+│                                                                      │
+│   2. memory.current / memory.max (swap usage ratio)                  │
+│      If swap usage exceeds a threshold → candidate for kill.         │
+│                                                                      │
+│ Decision logic:                                                      │
+│   systemd-oomd monitors cgroups (systemd slices/services).           │
+│   When memory.pressure exceeds threshold (default: avg10 > 60%):    │
+│     → Find the cgroup using the most memory (memory.current)         │
+│     → Kill it (send SIGKILL to all processes in that cgroup)         │
+│     → Log it to journal: "systemd-oomd killed /my.service"          │
+│                                                                      │
+│ Configuration (in systemd .service or .slice):                       │
+│   [Service]                                                          │
+│   ManagedOOMSwap=kill            # kill if swap pressure high        │
+│   ManagedOOMMemoryPressure=kill  # kill if memory pressure high      │
+│   ManagedOOMMemoryPressureLimit=80%  # threshold for avg10           │
+│                                                                      │
+│ Enabled by default on: Fedora, Ubuntu 22.04+, RHEL 9+               │
+│ Not used in Kubernetes (K8s has its own eviction manager).           │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Summary — Three layers of OOM protection:**
+
+```
+  Trigger condition          │ Metric used           │ Scope
+  ──────────────────────────┼───────────────────────┼─────────────────
+  systemd-oomd               │ memory.pressure (PSI) │ per-cgroup (proactive)
+  (before things get bad)    │ + memory.current      │
+                             │                       │
+  cgroup OOM killer          │ memory.current vs     │ per-cgroup (reactive)
+  (container hits limit)     │ memory.max            │
+                             │                       │
+  kernel global OOM          │ oom_score (RSS-based)  │ system-wide (last resort)
+  (entire system out of RAM) │ + oom_score_adj       │
+
+  They fire in order of severity:
+    systemd-oomd first → cgroup OOM second → kernel OOM last resort
+```
+
 ### How they connect — Docker puts them together
 
 ```
@@ -439,6 +848,235 @@ cgroups v2 (modern, default since ~2022):
   Required by: newer Docker, Kubernetes, systemd.
 ```
 
+## 7. Synchronization Primitives — Mutex, Semaphore, Condvar
+
+When multiple threads (or processes) access shared state, you need
+synchronization. These are your core tools:
+
+### Mutex (Mutual Exclusion)
+
+```
+A mutex is a LOCK. Only ONE thread can hold it at a time.
+
+  Thread A                Thread B
+  lock(mutex)
+    counter += 1          lock(mutex) ← BLOCKS (waits for A to unlock)
+  unlock(mutex)
+                          counter += 1
+                          unlock(mutex)
+
+Simple rule: one holder at a time. Everyone else waits.
+
+In Rust:
+  let data = Arc::new(Mutex::new(0));
+  {
+      let mut guard = data.lock().unwrap();  // blocks until acquired
+      *guard += 1;
+  }  // guard drops → lock released automatically (RAII)
+
+In POSIX C:
+  pthread_mutex_lock(&mtx);
+  counter++;
+  pthread_mutex_unlock(&mtx);
+```
+
+### Semaphore — The Generalized Lock
+
+```
+A semaphore is a COUNTER with atomic wait/signal operations.
+It controls access to a resource with a LIMITED number of slots.
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ Semaphore(N)                                                     │
+  │                                                                  │
+  │ Internal state: count (initialized to N)                         │
+  │                                                                  │
+  │ wait() / P() / acquire():                                        │
+  │   if count > 0 → count -= 1, proceed (non-blocking)             │
+  │   if count == 0 → BLOCK until someone signals                    │
+  │                                                                  │
+  │ signal() / V() / release():                                      │
+  │   count += 1                                                     │
+  │   if threads are waiting → wake one up                           │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Binary semaphore (N=1): acts like a mutex
+  Counting semaphore (N>1): allows up to N concurrent holders
+```
+
+### Semaphore vs Mutex — When to Use Which
+
+```
+  Mutex:                             Semaphore:
+  ┌──────────────────────────────┐  ┌──────────────────────────────┐
+  │ Exactly 1 holder             │  │ Up to N holders              │
+  │ Owner must unlock            │  │ ANY thread can signal        │
+  │ Protects a critical section  │  │ Controls concurrent access   │
+  │ Has ownership (thread-bound) │  │ No ownership concept         │
+  └──────────────────────────────┘  └──────────────────────────────┘
+
+  KEY DIFFERENCE: a mutex has an OWNER — only the thread that locked it
+  can unlock it. A semaphore has no owner — thread A can wait(), and
+  thread B can signal(). This makes semaphores useful for SIGNALING
+  between threads, not just mutual exclusion.
+```
+
+### Semaphore Use Cases
+
+```
+1. CONNECTION POOL (most common in system design)
+
+   Semaphore(20)   ← 20 database connections available
+
+   Thread A: sem.wait()   → count=19, gets a connection
+   Thread B: sem.wait()   → count=18, gets a connection
+   ...
+   Thread T: sem.wait()   → count=0, BLOCKS — no connections left
+   Thread A: sem.signal() → count=1, Thread T wakes up, gets connection
+
+2. RATE LIMITING
+
+   Semaphore(100)  ← max 100 concurrent API calls
+
+   async fn call_api() {
+       sem.acquire().await;   // blocks if 100 calls in flight
+       let result = http_get(url).await;
+       sem.release();
+       result
+   }
+
+3. PRODUCER-CONSUMER (bounded buffer)
+
+   Two semaphores work together:
+     empty = Semaphore(BUFFER_SIZE)   ← starts full (all slots empty)
+     full  = Semaphore(0)             ← starts at 0 (no items yet)
+
+   Producer:                    Consumer:
+     empty.wait()     ← wait for space   full.wait()    ← wait for item
+     buffer.push(item)                    item = buffer.pop()
+     full.signal()    ← signal "item ready"  empty.signal() ← signal "slot free"
+
+   This elegantly handles:
+     - Buffer full → producer blocks
+     - Buffer empty → consumer blocks
+     - No busy-waiting
+
+4. THREAD-TO-THREAD SIGNALING (binary semaphore)
+
+   Semaphore(0)  ← starts at 0
+
+   Thread A (worker):          Thread B (coordinator):
+     do_work();
+     done.signal();            done.wait();  ← blocks until A signals
+                                process_results();
+
+   Can't do this with a mutex — mutex requires same thread to lock/unlock.
+```
+
+### Semaphore on Linux (kernel level)
+
+```
+Two kinds of semaphores on Linux:
+
+POSIX semaphores (modern, preferred):
+  Named:     sem_open("/my_sem", O_CREAT, 0644, N)    ← cross-process, filesystem-visible
+  Unnamed:   sem_init(&sem, shared, N)                 ← thread or process-local
+
+  sem_wait(&sem);     // decrement or block
+  sem_post(&sem);     // increment, wake waiter
+  sem_trywait(&sem);  // non-blocking (returns EAGAIN if would block)
+  sem_timedwait();    // block with timeout
+
+System V semaphores (legacy):
+  semget(), semop(), semctl()
+  More complex API, supports semaphore SETS (multiple in one object)
+  Still used by PostgreSQL internally
+
+Under the hood — futex:
+  Both mutex and semaphore are built on futex (Fast Userspace muTEX):
+    Fast path:  atomic compare-and-swap in userspace (no syscall!)
+    Slow path:  futex(FUTEX_WAIT) → kernel blocks the thread
+
+  Uncontended lock = ~25ns (just an atomic op, never enters kernel)
+  Contended lock   = ~1-10µs (kernel involvement, thread sleep/wake)
+```
+
+### In Rust
+
+```rust
+// std::sync doesn't have a Semaphore, but tokio does:
+use tokio::sync::Semaphore;
+
+let sem = Arc::new(Semaphore::new(10));  // 10 permits
+
+async fn limited_work(sem: Arc<Semaphore>) {
+    let permit = sem.acquire().await.unwrap();  // blocks if 0 permits
+    do_expensive_work().await;
+    drop(permit);  // release permit (RAII, or call permit.forget() to leak)
+}
+
+// Or use acquire_owned() to move permit across tasks:
+let permit = sem.clone().acquire_owned().await.unwrap();
+tokio::spawn(async move {
+    do_work().await;
+    drop(permit);  // released when task finishes
+});
+
+// For non-async code, use std's tools:
+// - Mutex for mutual exclusion
+// - Condvar for signaling (condition variable)
+// - Or crossbeam / parking_lot crates for fancier primitives
+```
+
+### Condition Variable (Condvar) — Semaphore's Sibling
+
+```
+A condvar lets a thread SLEEP until a condition becomes true,
+re-checking the condition each time it's woken.
+
+  Always used WITH a mutex:
+
+  let pair = Arc::new((Mutex::new(false), Condvar::new()));
+
+  // Waiting thread:
+  let (lock, cvar) = &*pair;
+  let mut ready = lock.lock().unwrap();
+  while !*ready {
+      ready = cvar.wait(ready).unwrap();  // releases lock, sleeps, re-acquires
+  }
+  // condition is true, proceed
+
+  // Signaling thread:
+  let (lock, cvar) = &*pair;
+  *lock.lock().unwrap() = true;
+  cvar.notify_one();  // wake one waiter (notify_all() wakes all)
+
+Semaphore vs Condvar:
+  Semaphore: "there are N resources available" (count-based)
+  Condvar:   "wake up and check if your condition is true" (predicate-based)
+
+  Condvar is more flexible but requires manual predicate checking.
+  Semaphore is simpler for counting-based coordination.
+```
+
+### Common Pitfalls
+
+```
+1. DEADLOCK: Thread A holds lock X, waits for Y. Thread B holds Y, waits for X.
+   Fix: always acquire locks in the same global order.
+
+2. PRIORITY INVERSION: low-priority thread holds lock, high-priority thread
+   starves waiting. Fix: priority inheritance (OS/RTOS feature).
+
+3. FORGOTTEN SIGNAL: semaphore.wait() without matching signal → thread blocked
+   forever. Use RAII guards (Rust's Drop) to ensure release.
+
+4. SPURIOUS WAKEUP: condvar can wake without signal (POSIX allows this).
+   Always put wait() in a WHILE loop, not an IF.
+   while !condition { cvar.wait(); }   ← correct
+   if !condition { cvar.wait(); }      ← WRONG, may proceed without condition
+```
+
 ## Interview Talking Points
 
 | Question | What to Say |
@@ -449,3 +1087,6 @@ cgroups v2 (modern, default since ~2022):
 | "Docker vs VM?" | Containers share kernel (fast, lightweight), VMs have full kernel (isolated, slower) |
 | "Why connection pooling?" | Avoid TCP handshake + port exhaustion, reuse established connections |
 | "fsync performance?" | SSD: 0.1-2ms, HDD: 5-15ms. Batch commits to minimize fsyncs |
+| "Semaphore vs mutex?" | Mutex = 1 holder with ownership. Semaphore = N holders, no ownership, any thread can signal. Semaphore is for limiting concurrency (connection pools, rate limiting). |
+| "How does a connection pool limit connections?" | Counting semaphore initialized to pool size. acquire() before use, release() after. If all taken, caller blocks until one is returned. |
+| "What's a deadlock?" | Two threads each hold a lock the other needs. Fix: global lock ordering, or try-lock with timeout. |
