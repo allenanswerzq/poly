@@ -163,6 +163,82 @@ What actually happens:
     This is called WARP DIVERGENCE.
 ```
 
+**Warp divergence at the instruction level — what the hardware actually does:**
+
+```
+Source code:
+  if (threadIdx.x % 2 == 0) {
+      y = a + b;      // even threads
+  } else {
+      y = a * b;      // odd threads
+  }
+  z = y + 1;          // all threads
+
+This compiles to something like:
+
+  Addr  Instruction         What it does
+  ───── ──────────────────  ─────────────────────────────────
+  0x00  AND  r4, tid, 1    r4 = threadIdx.x & 1  (0 or 1)
+  0x04  SETP p0, r4, 0     p0 = (r4 == 0)  → predicate register
+  0x08  @!p0 BRA 0x14      if p0 is FALSE → jump to else-branch
+  ─── if-branch (even threads) ───
+  0x0C  ADD  r5, r1, r2    y = a + b
+  0x10  BRA  0x18           jump past else-branch → reconverge
+  ─── else-branch (odd threads) ───
+  0x14  MUL  r5, r1, r2    y = a * b
+  ─── reconverge point ───
+  0x18  ADD  r6, r5, 1     z = y + 1
+
+Now, on a CPU with 2 threads, this is fine:
+  Thread 0 (even): 0x00 → 0x04 → 0x08(not taken) → 0x0C → 0x10 → 0x18
+  Thread 1 (odd):  0x00 → 0x04 → 0x08(taken)     → 0x14 → 0x18
+  They run independently on separate cores. No problem.
+
+On a GPU, all 32 threads in a warp share ONE program counter.
+Here's what really happens cycle by cycle for 4 threads (T0-T3):
+
+  Cycle  PC     Instruction       T0(even)  T1(odd)  T2(even)  T3(odd)
+  ─────  ─────  ────────────────  ────────  ───────  ────────  ───────
+    1    0x00   AND r4, tid, 1    ✓ r4=0   ✓ r4=1  ✓ r4=0   ✓ r4=1
+    2    0x04   SETP p0, r4, 0   ✓ p0=T   ✓ p0=F  ✓ p0=T   ✓ p0=F
+    3    0x08   @!p0 BRA 0x14    (not tkn) (taken)  (not tkn) (taken)
+                                  ─── DIVERGENCE DETECTED! ───
+                                  Hardware splits warp into 2 groups.
+                                  Sets active mask = 0b...1010 (even)
+
+  ── execute if-branch with even threads active ──
+    4    0x0C   ADD r5, r1, r2   ✓ ADD    ░░░ idle ✓ ADD    ░░░ idle
+    5    0x10   BRA 0x18         ✓ jump   ░░░      ✓ jump   ░░░
+
+                                  Sets active mask = 0b...0101 (odd)
+
+  ── execute else-branch with odd threads active ──
+    6    0x14   MUL r5, r1, r2   ░░░ idle ✓ MUL   ░░░ idle ✓ MUL
+
+                                  Restore active mask = 0b...1111 (all)
+
+  ── reconverge: all threads active again ──
+    7    0x18   ADD r6, r5, 1    ✓ ADD    ✓ ADD    ✓ ADD    ✓ ADD
+
+  Total: 7 cycles.
+  Without divergence (all threads take same branch): 5 cycles.
+  The extra 2 cycles are PURE WASTE — idle threads burning silicon.
+
+  KEY INSIGHT: The BRA (branch/jump) instruction is where it all goes wrong.
+  On a CPU, a branch sends each thread to a different address. Fine.
+  On a GPU, a branch can't send 32 threads to different addresses,
+  because there's only ONE program counter per warp.
+
+  So the hardware says: "OK, I'll go to BOTH addresses, one at a time,
+  and mask off the threads that shouldn't be running."
+
+  This is why warp switching (warp 0 → warp 3) is FREE (zero cost),
+  but thread divergence WITHIN a warp is EXPENSIVE:
+    - Warp switch: just pick a different warp, it has its own PC & regs.
+    - Divergence:  the 32 threads inside are STUCK TOGETHER. You can't
+                   split them onto different PCs. You serialize instead.
+```
+
 **Volta+ improvement (independent thread scheduling):**
 
 ```
@@ -306,30 +382,74 @@ How threads are grouped into warps:
 ## 3. Programming Model (CUDA Hierarchy)
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    CUDA Programming Model                    │
-│                                                              │
-│  Grid (entire kernel launch)                                 │
-│  ┌───────────────────────────────────────────────────┐      │
-│  │ Block (0,0)    Block (1,0)    Block (2,0)          │      │
-│  │ ┌───────────┐ ┌───────────┐  ┌───────────┐        │      │
-│  │ │ Thread 0  │ │ Thread 0  │  │ Thread 0  │        │      │
-│  │ │ Thread 1  │ │ Thread 1  │  │ Thread 1  │        │      │
-│  │ │ ...       │ │ ...       │  │ ...       │        │      │
-│  │ │ Thread 255│ │ Thread 255│  │ Thread 255│        │      │
-│  │ └───────────┘ └───────────┘  └───────────┘        │      │
-│  │                                                    │      │
-│  │ Block (0,1)    Block (1,1)    Block (2,1)          │      │
-│  │ ┌───────────┐ ┌───────────┐  ┌───────────┐        │      │
-│  │ │ 256 threads│ │ 256 threads│ │ 256 threads│       │      │
-│  │ └───────────┘ └───────────┘  └───────────┘        │      │
-│  └───────────────────────────────────────────────────┘      │
-│                                                              │
-│  Grid   → maps to entire GPU                                │
-│  Block  → maps to 1 SM (shared memory visible within block) │
-│  Warp   → 32 threads executing same instruction (SIMT)      │
-│  Thread → individual lane                                    │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    CUDA Programming Model + Memory                        │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │  GLOBAL MEMORY (HBM) — visible to ALL threads in ALL blocks      │    │
+│  │  80 GB @ 2-3 TB/s.  Slowest GPU memory. Persists across kernels. │    │
+│  │                                                                   │    │
+│  │  Grid (entire kernel launch)                                      │    │
+│  │  ┌────────────────────────────────────────────────────────────┐  │    │
+│  │  │                                                            │  │    │
+│  │  │  Block (0,0)              Block (1,0)                      │  │    │
+│  │  │  ┌──────────────────────┐ ┌──────────────────────┐        │  │    │
+│  │  │  │ SHARED MEMORY 192KB │ │ SHARED MEMORY 192KB │        │  │    │
+│  │  │  │ (visible to all      │ │ (visible to all      │        │  │    │
+│  │  │  │  threads in THIS     │ │  threads in THIS     │        │  │    │
+│  │  │  │  block only)         │ │  block only)         │        │  │    │
+│  │  │  │ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │ │ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │        │  │    │
+│  │  │  │ Warp 0 (T0-T31)     │ │ Warp 0 (T0-T31)     │        │  │    │
+│  │  │  │ ┌────┐┌────┐┌────┐  │ │ ┌────┐┌────┐┌────┐  │        │  │    │
+│  │  │  │ │ T0 ││ T1 ││... │  │ │ │ T0 ││ T1 ││... │  │        │  │    │
+│  │  │  │ │regs││regs││    │  │ │ │regs││regs││    │  │        │  │    │
+│  │  │  │ └────┘└────┘└────┘  │ │ └────┘└────┘└────┘  │        │  │    │
+│  │  │  │ Warp 1 (T32-T63)    │ │ Warp 1 (T32-T63)    │        │  │    │
+│  │  │  │ ┌────┐┌────┐┌────┐  │ │ ┌────┐┌────┐┌────┐  │        │  │    │
+│  │  │  │ │T32 ││T33 ││... │  │ │ │T32 ││T33 ││... │  │        │  │    │
+│  │  │  │ │regs││regs││    │  │ │ │regs││regs││    │  │        │  │    │
+│  │  │  │ └────┘└────┘└────┘  │ │ └────┘└────┘└────┘  │        │  │    │
+│  │  │  │ ...                  │ │ ...                  │        │  │    │
+│  │  │  │ Warp 7 (T224-T255)  │ │ Warp 7 (T224-T255)  │        │  │    │
+│  │  │  └──────────────────────┘ └──────────────────────┘        │  │    │
+│  │  │                                                            │  │    │
+│  │  │  Block (0,1)              Block (1,1)                      │  │    │
+│  │  │  ┌──────────────────────┐ ┌──────────────────────┐        │  │    │
+│  │  │  │ SHARED MEMORY 192KB │ │ SHARED MEMORY 192KB │        │  │    │
+│  │  │  │ (its OWN copy —      │ │ (its OWN copy —      │        │  │    │
+│  │  │  │  cannot see Block     │ │  cannot see Block     │        │  │    │
+│  │  │  │  (0,0)'s shared mem) │ │  (1,0)'s shared mem) │        │  │    │
+│  │  │  │ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │ │ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │        │  │    │
+│  │  │  │ 256 threads (8 warps)│ │ 256 threads (8 warps)│        │  │    │
+│  │  │  │ each with own regs   │ │ each with own regs   │        │  │    │
+│  │  │  └──────────────────────┘ └──────────────────────┘        │  │    │
+│  │  └────────────────────────────────────────────────────────────┘  │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                           │
+│  Memory scope summary:                                                    │
+│                                                                           │
+│    Registers  → per THREAD  (fastest, ~20 TB/s, 255 regs per thread)     │
+│                 T0 cannot read T1's registers (unless warp shuffle)       │
+│                                                                           │
+│    Shared Mem → per BLOCK   (fast, ~15 TB/s, 192 KB per SM)             │
+│                 All threads in Block(0,0) share one pool.                 │
+│                 Block(0,0) CANNOT see Block(1,0)'s shared memory.        │
+│                 This is why __syncthreads() only syncs within a block.   │
+│                                                                           │
+│    Global Mem → per GRID    (slow, 2-3 TB/s, 80 GB HBM)                 │
+│                 ALL blocks can read/write. This is how blocks communicate.│
+│                 But no ordering guarantees — need atomics or barriers.    │
+│                                                                           │
+│    L2 Cache   → hardware-managed, sits between SMs and Global Memory     │
+│                 You don't control it. GPU auto-caches global mem reads.   │
+│                                                                           │
+│  Why this matters:                                                        │
+│    Shared memory is 10-15x faster than global memory.                    │
+│    The tiled matmul kernel loads tiles into shared memory so that        │
+│    all 256 threads in the block can reuse the same data from the tile,  │
+│    instead of each thread loading from slow global memory individually.  │
+│    But threads in different blocks MUST go through global memory.        │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Writing a Real CUDA Kernel — From Code to Execution
