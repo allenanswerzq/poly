@@ -1,4 +1,4 @@
-# GPU Architecture — What Principal Engineers Must Know
+# GPU Architecture — What Must Know
 
 ## Why This Matters
 

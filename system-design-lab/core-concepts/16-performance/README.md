@@ -1,4 +1,4 @@
-# Performance & Memory Optimization — What Principal Engineers Must Know
+# Performance & Memory Optimization — What Must Know
 
 ## Why This Matters
 
