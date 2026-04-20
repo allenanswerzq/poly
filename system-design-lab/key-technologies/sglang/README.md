@@ -4,6 +4,47 @@
 
 SGLang (Structured Generation Language) is a **serving framework optimized for complex LLM programs** — multi-turn conversations, tool calling, constrained decoding, and branching logic. Where vLLM optimizes single-request throughput, SGLang optimizes **multi-call LLM programs** with features like RadixAttention (prefix caching on steroids).
 
+## History & Why It Exists
+
+```
+The problem (2023):
+  LLM serving engines (vLLM, TGI) optimized for single request-response:
+    User sends prompt → engine generates tokens → return response.
+
+  But real LLM applications make MULTIPLE calls per user request:
+    1. User asks question
+    2. LLM decides to call a tool (function calling)
+    3. Tool result fed back to LLM
+    4. LLM generates final answer
+    → 3 separate LLM calls, all sharing the same prefix context.
+
+  With existing engines, each call reprocesses the ENTIRE context
+  from scratch. The shared prefix (system prompt + conversation history)
+  is computed again and again. Massive waste.
+
+  Lianmin Zheng (UC Berkeley, also first author of the vLLM paper)
+  built SGLang to solve this: RadixAttention caches KV entries in a
+  RADIX TREE indexed by token sequences. When a new request shares a
+  prefix with a previous one, the cached KV is reused automatically.
+
+Timeline:
+  2023  SGLang paper: "Efficiently Programming Large Language Models
+        using SGLang" (Zheng et al., UC Berkeley)
+  2024  SGLang v0.2+ — becomes competitive with vLLM on raw throughput
+  2024  RadixAttention shown to give 3-6x speedup on multi-turn workloads
+  2025  SGLang matures, adopted for complex LLM programming (agents, RAG)
+
+Key insight:
+  vLLM optimizes the SERVING ENGINE (memory management, batching).
+  SGLang optimizes the PROGRAMMING MODEL (prefix sharing, branching,
+  constrained decoding). They solve different layers of the problem.
+
+  SGLang's frontend is a Python-embedded DSL:
+    s = sgl.gen("answer", max_tokens=100)  → not just an API call,
+    but a program where the runtime optimizes KV cache sharing across
+    all the generation calls within the program.
+```
+
 ## The Problem SGLang Solves
 
 ```

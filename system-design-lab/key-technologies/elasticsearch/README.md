@@ -4,6 +4,50 @@
 
 Elasticsearch is a distributed search and analytics engine. Understanding it is crucial for designing search systems, log analysis, and full-text search features.
 
+## History & Why It Exists
+
+```
+The problem (2004-2010):
+  Full-text search is HARD. You can't just use SQL LIKE '%term%':
+    - It scans every row (no index)
+    - No relevance ranking
+    - No fuzzy matching, synonyms, stemming
+    - Not distributed (single PostgreSQL can't index the web)
+
+  Apache Lucene (1999, Doug Cutting) solved the core search problem:
+    Inverted index + BM25 scoring. Fast, accurate full-text search.
+    But Lucene is a Java LIBRARY, not a distributed system.
+
+  Apache Solr (2004) wrapped Lucene in an HTTP server.
+  But Solr's distributed mode (SolrCloud) was bolted on later and complex.
+
+  Shay Banon built Elasticsearch (2010): Lucene + distributed from day one.
+    - Every index is automatically sharded and replicated
+    - REST API (JSON in, JSON out, easy to use)
+    - Schema-free (auto-detect field types)
+    - Near real-time search (documents searchable within 1 second)
+
+Timeline:
+  1999  Doug Cutting creates Apache Lucene (search library)
+  2004  Apache Solr — first Lucene-based search server
+  2010  Elasticsearch 0.4 released by Shay Banon
+  2012  Elastic company founded (originally called Elasticsearch BV)
+  2015  ELK stack (Elasticsearch + Logstash + Kibana) dominates log analysis
+  2019  Elastic IPO (NYSE: ESTC)
+  2021  License change: Elastic License / SSPL (no longer Apache 2.0)
+  2021  AWS forks → OpenSearch (Apache 2.0 licensed)
+  2024  Elasticsearch returns to open source (AGPL)
+
+Elasticsearch vs OpenSearch:
+  After the license change, AWS forked Elasticsearch → OpenSearch.
+  Both are actively developed. OpenSearch is drop-in compatible.
+  In interviews, the concepts (inverted index, sharding, BM25) are identical.
+
+Who uses it:
+  Wikipedia (search), GitHub (code search), Netflix (logging),
+  Uber (geosearch), Stack Overflow (search), every company with a search bar.
+```
+
 ## What You Must Master
 
 ### 1. Core Architecture

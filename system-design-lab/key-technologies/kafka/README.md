@@ -4,6 +4,55 @@
 
 Kafka is a distributed event streaming platform. It's the backbone of modern data pipelines, real-time processing, and event-driven architectures. You MUST understand Kafka for staff+ interviews.
 
+## History & Why It Exists
+
+```
+The problem (2010):
+  LinkedIn had a mess of point-to-point data pipelines:
+    App A → push to MySQL
+    App B → push to Hadoop
+    App C → push to monitoring
+    Every new data consumer = new pipeline to build and maintain.
+    N producers × M consumers = N×M connections. Unmaintainable.
+
+  Existing messaging systems (RabbitMQ, ActiveMQ) couldn't handle:
+    - Millions of messages per second (LinkedIn's scale)
+    - Durable storage (messages disappear after consumption)
+    - Replay (can't re-read old messages)
+    - Horizontal scaling
+
+  Jay Kreps, Neha Narkhede, and Jun Rao at LinkedIn built Kafka:
+    A distributed commit log where producers APPEND events and
+    consumers READ at their own pace. Messages are PERSISTENT
+    (stored on disk, not deleted after reading) and REPLAYABLE.
+
+  The insight: treat the MESSAGE LOG as the source of truth.
+    Not a queue (consume-and-delete), but a LOG (append-and-keep).
+
+Timeline:
+  2010  Built at LinkedIn (named after author Franz Kafka)
+  2011  Open-sourced
+  2012  Apache top-level project
+  2014  Confluent founded by Kafka creators (commercial support)
+  2017  Kafka Streams (stream processing library)
+  2018  KSQL/ksqlDB (SQL over Kafka streams)
+  2023  KRaft mode replaces ZooKeeper (self-managed metadata)
+  2024  Kafka 4.0 — ZooKeeper fully removed
+
+Key design decisions that made Kafka fast:
+  - Sequential I/O: append-only log, no random disk seeks
+  - Zero-copy: sendfile() syscall, kernel sends data directly to NIC
+  - Batching: messages grouped before network send
+  - Partitioning: topics split across brokers for parallelism
+  - Consumer pull model: consumers read at their own speed
+  - Page cache: relies on OS page cache, not JVM heap
+
+Who uses it:
+  Every large tech company. Netflix (event processing), Uber (ride tracking),
+  Airbnb (analytics pipeline), Goldman Sachs (trading), New York Times.
+  LinkedIn processes 7+ trillion messages per day through Kafka.
+```
+
 ## What You Must Master
 
 ### 1. Core Architecture

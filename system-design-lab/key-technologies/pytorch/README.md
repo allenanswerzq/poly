@@ -4,6 +4,139 @@
 
 PyTorch is the **dominant framework for ML research and increasingly for production**. As a principal engineer, you need to understand its execution model, distributed training primitives, and how it maps to hardware.
 
+## History & Why It Exists
+
+```
+The problem (2015-2016):
+  TensorFlow (Google, 2015) dominated ML but had a painful API:
+    - Define-then-run: build a static computation graph, THEN execute it.
+    - Debugging was terrible (couldn't use Python debugger on the graph).
+    - Dynamic models (variable-length sequences, tree structures) were hard.
+
+  Researchers wanted something that felt like NumPy but ran on GPUs.
+  "Just write Python. Use normal if/for/while. Debug with print()."
+
+  Soumith Chintala and the Facebook AI Research (FAIR) team built PyTorch:
+    - Define-by-run: computation graph built dynamically as you execute.
+    - Feels like NumPy with GPU support + automatic differentiation.
+    - Based on Torch (Lua framework), rewritten in Python.
+
+Timeline:
+  2002  Torch (Lua-based ML framework, NYU) — PyTorch's ancestor
+  2016  PyTorch 0.1 released by Facebook AI Research
+  2017  Rapid adoption by ML researchers (NeurIPS/ICML papers shift)
+  2018  PyTorch 1.0 (TorchScript for production, C++ frontend)
+  2020  PyTorch overtakes TensorFlow in research paper count
+  2022  PyTorch 2.0 (torch.compile — the compiler revolution)
+  2022  PyTorch Foundation moves to Linux Foundation (not just Meta)
+  2023  PyTorch dominates both research AND production
+  2024  PyTorch 2.4+ (torch.export, FlexAttention, compiled custom ops)
+
+Why PyTorch won:
+  1. EAGER MODE: run code line-by-line, debug with print(). Researchers loved it.
+  2. PYTHONIC: feels like writing normal Python, not a DSL.
+  3. Dynamic graphs: easily handle variable-length inputs (NLP, speech).
+  4. Community: every paper releases PyTorch code. Ecosystem effect.
+  5. torch.compile (2.0): closed the performance gap with TF/XLA.
+     Now you get both ease-of-use AND compiled performance.
+
+PyTorch vs TensorFlow:
+  2016-2019: TF for production, PyTorch for research
+  2020-2022: PyTorch dominates research, TF still in some production
+  2023+:     PyTorch dominant everywhere. TF is maintenance mode.
+             Google themselves use JAX internally now, not TF.
+```
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│              PyTorch Execution Architecture                       │
+│                                                                   │
+│  y = model(x)  →  what happens?                                  │
+│                                                                   │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │                    Python Frontend                        │    │
+│  │                                                           │    │
+│  │  torch.nn.Module  ─►  forward() method                    │    │
+│  │  torch.Tensor     ─►  data + grad + device info           │    │
+│  │  torch.autograd   ─►  builds computation graph on-the-fly │    │
+│  └──────────────────────────────────────────────────────────┘    │
+│         │ calls C++ dispatcher                                    │
+│         ▼                                                        │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │               torch.dispatch  (C++ core)                  │    │
+│  │                                                           │    │
+│  │  Dispatcher routes operations based on:                   │    │
+│  │    - Device (CPU / CUDA / MPS)                            │    │
+│  │    - Dtype (float32 / bfloat16 / int8)                    │    │
+│  │    - Autograd (record op for backward pass)               │    │
+│  │    - Compile (TorchDynamo captures the graph)             │    │
+│  └──────────────────────────────────────────────────────────┘    │
+│         │ dispatches to backend                                    │
+│         ▼                                                        │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │                  ATen (tensor library, C++)               │    │
+│  │                                                           │    │
+│  │  1800+ tensor operations: matmul, conv2d, relu, etc.     │    │
+│  │  Each op has CPU, CUDA, and sometimes MPS implementations│    │
+│  │                                                           │    │
+│  │  CPU: calls MKL/oneDNN (Intel) or OpenBLAS               │    │
+│  │  CUDA: calls cuBLAS (matmul), cuDNN (conv), custom kernels│   │
+│  └──────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘
+
+torch.compile PIPELINE (PyTorch 2.0+):
+  ┌───────────────────────────────────────────────────────┐
+  │  @torch.compile                                        │
+  │  def f(x): return relu(x @ w + b)                      │
+  │                                                        │
+  │  Step 1: TorchDynamo                                   │
+  │    Intercepts Python bytecode                           │
+  │    Captures computation graph (FX Graph)                │
+  │    Handles control flow, data-dependent shapes          │
+  │       │                                                │
+  │       ▼                                                │
+  │  Step 2: AOTAutograd                                   │
+  │    Traces forward + backward pass at compile time       │
+  │    Produces joint graph for both directions             │
+  │       │                                                │
+  │       ▼                                                │
+  │  Step 3: Inductor (default backend)                    │
+  │    FX Graph → Triton kernels (GPU) or C++ (CPU)        │
+  │    Fuses ops: matmul+add+relu → ONE kernel             │
+  │       │                                                │
+  │       ▼                                                │
+  │  Step 4: Triton → PTX → GPU machine code               │
+  │    Auto-tunes tile sizes per GPU model                  │
+  │       │                                                │
+  │       ▼                                                │
+  │  Cached compiled kernel (fast on subsequent calls)     │
+  └───────────────────────────────────────────────────────┘
+
+DISTRIBUTED TRAINING (multi-GPU):
+  ┌───────────────────────────────────────────────────────┐
+  │  DDP (Distributed Data Parallel):                       │
+  │                                                        │
+  │  GPU 0        GPU 1        GPU 2        GPU 3         │
+  │  ┌──────┐    ┌──────┐    ┌──────┐    ┌──────┐    │
+  │  │ Full  │    │ Full  │    │ Full  │    │ Full  │    │
+  │  │ Model │    │ Model │    │ Model │    │ Model │    │
+  │  │ Copy  │    │ Copy  │    │ Copy  │    │ Copy  │    │
+  │  └───┬──┘    └───┬──┘    └───┬──┘    └───┬──┘    │
+  │      │            │            │            │         │
+  │      └──── AllReduce (avg gradients) ────┘         │
+  │              via NCCL (GPU-to-GPU, NVLink)              │
+  │                                                        │
+  │  Each GPU gets different data batch (data parallelism)  │
+  │  Forward: independent. Backward: AllReduce gradients.   │
+  │  All models stay synchronized.                          │
+  │                                                        │
+  │  FSDP: shards model across GPUs (for huge models).     │
+  │  Each GPU holds 1/N of parameters. Gather before use.  │
+  └───────────────────────────────────────────────────────┘
+```
+
 ## Core Concepts
 
 ### 1. Tensors — The Fundamental Data Type

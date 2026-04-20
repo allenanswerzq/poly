@@ -9,6 +9,129 @@ ZooKeeper is a distributed coordination service for:
 - **Service discovery**
 - **Group membership**
 
+## History & Why It Exists
+
+```
+The problem (2006):
+  Every distributed system needs coordination:
+    - Which node is the leader? (leader election)
+    - What's the current cluster configuration? (config management)
+    - How do we prevent two nodes from doing the same work? (distributed lock)
+    - Which nodes are alive? (service discovery / group membership)
+
+  Before ZooKeeper, every system implemented these from scratch:
+    Hadoop had its own NameNode failover logic.
+    HBase had its own region assignment coordination.
+    Every system re-invented consensus, and most got it wrong.
+
+  Yahoo engineers (Patrick Hunt, Mahadev Konar, et al.) built ZooKeeper:
+  a GENERAL-PURPOSE coordination service that any distributed system
+  can use. Implement leader election ONCE, correctly, and share it.
+
+  The name: "ZooKeeper" because it coordinates distributed systems,
+  which they jokingly called a "zoo" of services (Pig, Hive, HBase...).
+
+Timeline:
+  2006  Built at Yahoo for Hadoop coordination
+  2008  Open-sourced as part of Hadoop project
+  2011  Apache top-level project
+  2010s ZooKeeper becomes the de facto coordination service for:
+        Kafka (broker coordination, partition assignment)
+        HBase (region server coordination)
+        Hadoop (NameNode HA, YARN)
+        Solr/SolrCloud (cluster state)
+  2020s Being replaced in some systems:
+        Kafka → KRaft (built-in consensus, no ZK dependency)
+        etcd → preferred for Kubernetes coordination
+        But ZooKeeper still runs in thousands of clusters.
+
+ZooKeeper vs etcd vs Consul:
+  ZooKeeper: Java, ZAB consensus, oldest, battle-tested
+  etcd:      Go, Raft consensus, Kubernetes-native, simpler API
+  Consul:    Go, Raft consensus, built-in service mesh, HashiCorp
+
+  ZooKeeper was first and most widely deployed.
+  etcd is winning in new deployments (Kubernetes ecosystem).
+  Consul is strong for service mesh use cases.
+
+Key design philosophy:
+  - Small data, high reads: NOT a database. Stores kilobytes of metadata.
+  - Sequential consistency: reads may be stale, but always in order.
+  - Linearizable writes: all writes go through a single leader.
+  - Watches: clients subscribe to changes (notification-based, not polling).
+  - Ephemeral nodes: disappear when client disconnects (heartbeat-based).
+    This is how you detect node failure → leader election, service discovery.
+  - ZAB protocol: ZooKeeper Atomic Broadcast (similar to Paxos/Raft).
+
+Who uses it:
+  Kafka (until KRaft migration), HBase, Hadoop, Solr, LinkedIn,
+  Twitter, eBay. Millions of production clusters worldwide.
+```
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│               ZooKeeper Ensemble (cluster)                        │
+│                                                                   │
+│  Typical: 3 or 5 nodes (odd number for majority voting)          │
+│                                                                   │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐             │
+│  │   Leader    │  │  Follower  │  │  Follower  │             │
+│  │            │  │            │  │            │             │
+│  │ All writes │─►│ Replicates │  │ Replicates │             │
+│  │ go here    │  │ from leader│  │ from leader│             │
+│  │            │  │ Serves     │  │ Serves     │             │
+│  │            │  │ reads      │  │ reads      │             │
+│  └──────┬─────┘  └──────┬─────┘  └──────┬─────┘             │
+│         │              │              │                         │
+│         └────── ZAB protocol (atomic broadcast) ────┘         │
+│                                                                   │
+│  Leader elected by majority vote.                                │
+│  WRITES: client → any node → forwarded to leader                │
+│          → leader proposes → majority ack → committed            │
+│  READS:  served by ANY node (may be slightly stale)              │
+│          sync read: client can force read from leader             │
+└──────────────────────────────────────────────────────────────────┘
+
+SINGLE SERVER INTERNALS:
+  ┌───────────────────────────────────────────────────────┐
+  │  Client request (create /leader, set /config)          │
+  │       │                                                │
+  │       ▼                                                │
+  │  PrepRequestProcessor                                  │
+  │    └─► validate request, check ACLs, create txn        │
+  │       │                                                │
+  │       ▼                                                │
+  │  SyncRequestProcessor                                  │
+  │    └─► write txn to transaction log (WAL on disk)      │
+  │    └─► periodic snapshots of entire ZNode tree          │
+  │       │                                                │
+  │       ▼                                                │
+  │  FinalRequestProcessor                                 │
+  │    └─► apply txn to in-memory ZNode tree               │
+  │    └─► trigger watches (notify subscribed clients)      │
+  │    └─► return response to client                       │
+  │                                                        │
+  │  Data model: entirely in MEMORY                        │
+  │    └─► all ZNodes + data in RAM (fast reads)           │
+  │    └─► transaction log on disk (durability)             │
+  │    └─► snapshots on disk (faster recovery)              │
+  │                                                        │
+  │  NOT a database — stores kilobytes, not gigabytes.     │
+  │  Designed for metadata: configs, locks, leader info.    │
+  └───────────────────────────────────────────────────────┘
+
+SESSION & WATCHES:
+  Client opens a SESSION with the ensemble (heartbeat-based).
+  If client dies (heartbeat stops) → ephemeral nodes deleted.
+
+  WATCHES: client subscribes to changes on a ZNode.
+  When that ZNode changes → server sends ONE notification.
+  Client must re-register watch to get next notification.
+  (This is push-based, not polling — efficient for coordination.)
+```
+
 ## Core Concepts
 
 ### ZNodes (like files/directories)

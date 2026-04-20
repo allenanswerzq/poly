@@ -4,6 +4,56 @@
 
 MySQL is the **most widely deployed relational database** in the world. Powers Wikipedia, Facebook (Meta), Twitter (X), and most web applications. In interviews, MySQL and PostgreSQL are often interchangeable — but MySQL has specific strengths in replication and read scaling.
 
+## History & Why It Exists
+
+```
+The problem (1990s):
+  The web was born. Every website needed a database.
+  Oracle and DB2 cost $50K+ per license. PostgreSQL existed but was
+  complex and lacked good Windows support and replication.
+
+  Michael "Monty" Widenius created MySQL (1995): a simple, fast,
+  free relational database. Named after his daughter "My".
+  Philosophy: be FAST and EASY, not feature-complete.
+
+Timeline:
+  1995  MySQL 1.0 released (MyISAM engine, no transactions)
+  2001  InnoDB storage engine added (ACID transactions!
+        Designed by Heikki Tuuri, originally a separate company)
+  2005  MySQL 5.0 (stored procedures, triggers, views)
+  2008  Sun Microsystems acquires MySQL AB ($1B)
+  2009  Oracle acquires Sun → Oracle now owns MySQL
+  2009  Monty forks MySQL → MariaDB (community-driven fork)
+  2013  MySQL 5.6 (GTID replication, full-text search in InnoDB)
+  2016  MySQL 8.0 (window functions, CTEs, JSON improvements)
+  2024  MySQL 9.0 (JavaScript stored procedures, vector search)
+
+MySQL vs MariaDB:
+  After Oracle acquired MySQL, the original creator forked it.
+  MariaDB: community-driven, adds features faster, drop-in compatible.
+  MySQL: Oracle-driven, more conservative, but massive install base.
+  For interviews, they're interchangeable. Say "MySQL" unless asked.
+
+Key design philosophy:
+  - Simple and fast (easy to set up, fast for reads)
+  - Pluggable storage engines (InnoDB, MyISAM, Memory, etc.)
+  - InnoDB: ACID, row-level locking, MVCC, crash-safe
+  - Replication: master-replica is trivially easy to set up
+  - The "M" in LAMP stack (Linux + Apache + MySQL + PHP)
+
+Why MySQL dominated the web:
+  - Free (GPL license)
+  - Easy to install (5 minutes to first query)
+  - Fast enough for most web apps
+  - Read replicas trivially easy (scale reads horizontally)
+  - Every hosting provider supported it
+
+Who uses it:
+  Facebook/Meta (largest MySQL deployment: 1000s of shards),
+  Wikipedia (entire database), Twitter/X, GitHub, Booking.com,
+  Shopify, Uber (MySQL + Vitess for sharding).
+```
+
 ## When to Choose MySQL
 
 | Use Case | Why MySQL |

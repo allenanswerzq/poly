@@ -4,6 +4,54 @@
 
 Ray is a **unified framework for scaling AI/ML workloads**. It handles distributed training, hyperparameter tuning, serving, and reinforcement learning on a cluster of machines. Think of it as "distributed Python made easy."
 
+## History & Why It Exists
+
+```
+The problem (2017):
+  ML workloads were getting complex:
+    - Train a model on 8 GPUs (distributed training)
+    - Run 100 hyperparameter trials in parallel
+    - Serve the model with auto-scaling
+    - RL agents need to simulate + learn simultaneously
+
+  Each of these had a SEPARATE tool:
+    Distributed training: Horovod
+    Hyperparameter tuning: Optuna, Hyperopt
+    Serving: TF Serving, TorchServe
+    RL: custom code
+    Data processing: Spark, Dask
+
+  Robert Nishihara and Philipp Moritz at UC Berkeley (Ion Stoica's
+  group — same lab that created Spark) asked: what if ONE framework
+  handled all of these? Distribute ANY Python function across a cluster.
+
+  Ray's insight: instead of specialized frameworks, provide primitives:
+    @ray.remote turns any function into a distributed task.
+    @ray.remote turns any class into a distributed actor.
+    Ray handles scheduling, fault tolerance, data transfer.
+    Build any distributed app on top of these primitives.
+
+Timeline:
+  2017  Ray paper published at OSDI (UC Berkeley RISELab)
+  2019  Anyscale Inc. founded (commercial Ray support)
+  2020  Ray 1.0 (stable API, Ray Serve, Ray Tune)
+  2022  Ray 2.0 (Ray AIR — unified ML runtime)
+  2023  Ray becomes the standard for LLM training and serving
+        (used by OpenAI, Anthropic, many LLM companies)
+  2024  Ray 2.9+ (compiled DAGs for low-latency serving)
+
+Why Ray won the ML infrastructure market:
+  1. SIMPLE API: @ray.remote and you're distributed. 5 lines of code.
+  2. Python-native: not a JVM-based system like Spark.
+  3. Unified: train + tune + serve in one framework.
+  4. LLM era: Ray powers most LLM training pipelines.
+  5. Ecosystem: Ray Train, Ray Tune, Ray Serve, Ray Data.
+
+Who uses it:
+  OpenAI, Anthropic, Uber, Spotify, Instacart, Netflix, ByteDance,
+  Shopify. Most LLM training infrastructure runs on Ray.
+```
+
 ## Why Ray?
 
 ```

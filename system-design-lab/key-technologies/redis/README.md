@@ -4,6 +4,54 @@
 
 Redis (Remote Dictionary Server) is an in-memory data structure store used as cache, database, message broker, and session store. Understanding Redis internals is essential for staff+ level interviews.
 
+## History & Why It Exists
+
+```
+The problem (2009):
+  Salvatore Sanfilippo ("antirez") was building a real-time web
+  analytics system. He needed to track millions of events per second
+  with instant reads. MySQL was too slow.
+
+  He built Redis: an in-memory data structure server.
+  Not just a key-value cache — it supports RICH DATA STRUCTURES:
+  strings, lists, sets, sorted sets, hashes, bitmaps, streams,
+  HyperLogLogs — all operated on server-side with atomic commands.
+
+  The key insight: memcached is just key-value strings.
+  Redis gives you data structures, so you can do operations like
+  "add to sorted set" or "increment hash field" atomically on the
+  server, instead of read-modify-write from the client.
+
+Timeline:
+  2009  Salvatore Sanfilippo releases Redis
+  2010  VMware sponsors Redis development
+  2013  Redis Cluster (horizontal scaling, automatic sharding)
+  2015  Redis Labs (now Redis Inc.) founded, becomes primary sponsor
+  2018  Redis 5.0 (Streams — Kafka-like log data structure)
+  2020  Redis 6.0 (ACLs, threaded I/O, SSL)
+  2022  Redis 7.0 (functions, sharded pub/sub)
+  2024  Redis license changes to dual SSPL/RSALv2 (not open source)
+  2024  Valkey — Linux Foundation fork under BSD license
+
+Redis vs Valkey (2024+):
+  After Redis changed license, Linux Foundation forked it → Valkey.
+  AWS, Google Cloud, Oracle back Valkey. API-compatible.
+  Like the Elasticsearch → OpenSearch fork situation.
+  In interviews, the concepts are identical. Say "Redis" unless asked.
+
+Key design philosophy:
+  - SINGLE-THREADED event loop: no locks, no race conditions
+    (I/O threading added in 6.0, but core logic is still single-threaded)
+  - EVERYTHING in memory: reads and writes in microseconds
+  - Rich data structures: not just set/get, but ZADD, LPUSH, HINCRBY
+  - Persistence is optional: RDB snapshots + AOF append-only file
+  - Simplicity: ~100K lines of C, easy to reason about
+
+Who uses it:
+  Twitter, GitHub, StackOverflow, Pinterest, Snapchat,
+  basically every web application uses Redis for caching.
+```
+
 ## What You Must Master
 
 | Concept | Why It Matters |

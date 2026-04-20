@@ -4,6 +4,47 @@
 
 Apache Cassandra is a **wide-column distributed database** designed for massive write throughput and linear horizontal scaling. It sacrifices strong consistency for availability (AP in CAP theorem). Choose it when you need to write millions of events per second across multiple data centers.
 
+## History & Why It Exists
+
+```
+The problem (2007):
+  Facebook needed an inbox search system. Requirements:
+    - Handle 100M+ users writing messages simultaneously
+    - Work across multiple data centers (no single point of failure)
+    - Writes are MORE common than reads (opposite of most databases)
+
+  Existing options were insufficient:
+    MySQL: single-master writes, vertical scaling only
+    Oracle/DB2: expensive, not horizontally scalable
+    HBase: required HDFS + ZooKeeper, single-region only
+
+  Avinash Lakshman (co-author of Amazon Dynamo) and Prashant Malik at
+  Facebook designed Cassandra combining two seminal papers:
+    Amazon Dynamo (2007): ring topology, consistent hashing, tunable consistency
+    Google BigTable (2006): column-family data model, memtable + SSTable storage
+
+  Result: Dynamo's distribution model + BigTable's storage engine.
+
+Timeline:
+  2007  Built at Facebook for inbox search
+  2008  Open-sourced
+  2010  Apache top-level project
+  2011  DataStax founded (commercial Cassandra support)
+  2015  Cassandra 3.0 (materialized views, better compaction)
+  2021  Cassandra 4.0 (virtual tables, audit logging)
+
+Key design philosophy:
+  - Availability over consistency (AP in CAP theorem)
+  - Masterless — every node is equal (no single point of failure)
+  - Tunable consistency — choose per-query: ONE, QUORUM, ALL
+  - Write-optimized — append-only log + memtable, no read-before-write
+  - Linear scaling — add nodes, throughput grows linearly
+
+Who uses it:
+  Apple (400K+ nodes), Netflix, Discord, Instagram, Uber
+  Apple's deployment is the largest known Cassandra cluster in the world.
+```
+
 ## When to Choose Cassandra
 
 | Use Case | Why Cassandra |
@@ -36,6 +77,88 @@ Example: Chat messages
 │ All messages for conversation "abc" are stored together      │
 │ on the same node, sorted by time. Reading last 50 = fast.   │
 └─────────────────────────────────────────────────────────────┘
+```
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                   Cassandra Node Internals                        │
+│                                                                   │
+│  Client write: INSERT INTO messages (conv_id, sent_at, text) ... │
+│       │                                                           │
+│       ▼                                                           │
+│  ┌──────────────┐  ANY node can be coordinator (masterless!)     │
+│  │ Coordinator   │  Routes request to replica nodes               │
+│  │ Node          │  (based on partition key hash → token range)   │
+│  └──────┬───────┘                                                │
+│         │  forward to replica nodes (RF=3 → 3 nodes)             │
+│         ▼                                                        │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │              On Each Replica Node                         │    │
+│  │                                                           │    │
+│  │  1. Commit Log (append-only, sequential write to disk)    │    │
+│  │     └─► crash recovery: replay log after restart          │    │
+│  │                                                           │    │
+│  │  2. Memtable (in-memory sorted structure, per table)      │    │
+│  │     └─► sorted by clustering key (e.g., sent_at)          │    │
+│  │     └─► when full → flush to disk as SSTable              │    │
+│  │                                                           │    │
+│  │  3. SSTables (Sorted String Tables, immutable on disk)    │    │
+│  │     ┌──────────┐ ┌──────────┐ ┌──────────┐              │    │
+│  │     │SSTable 1  │ │SSTable 2  │ │SSTable 3  │              │    │
+│  │     │(old data) │ │(newer)    │ │(newest)   │              │    │
+│  │     └──────────┘ └──────────┘ └──────────┘              │    │
+│  │     └─► immutable! never modified after written           │    │
+│  │     └─► compaction merges multiple → fewer, larger SSTables│   │
+│  │                                                           │    │
+│  └──────────────────────────────────────────────────────────┘    │
+│                                                                   │
+│  Write acknowledged when CL nodes confirm (QUORUM = 2 of 3)     │
+└──────────────────────────────────────────────────────────────────┘
+
+WRITE PATH (why writes are ~1ms):
+  Client → Coordinator → Commit Log (sequential append) → Memtable (memory)
+  No read-before-write. No locks. No random I/O. Just append + memwrite.
+  That's why Cassandra writes are so fast.
+
+READ PATH (more complex):
+  Client → Coordinator → Replica Node(s)
+  On each replica:
+    1. Check Memtable (in-memory, instant)
+    2. Check Bloom Filters for each SSTable
+       └─► probabilistic: "definitely NOT here" or "maybe here"
+       └─► avoids reading SSTables that can't contain the key
+    3. Check Partition Index → find offset in SSTable
+    4. Read data from SSTable on disk
+    5. Merge results from Memtable + all matching SSTables
+       └─► newest timestamp wins (last-write-wins conflict resolution)
+
+  ┌─────────────────────────────────────────────────────────┐
+  │              Read Path Detail                            │
+  │                                                          │
+  │  Query: SELECT * FROM messages WHERE conv_id = 'abc'     │
+  │       │                                                  │
+  │       ▼                                                  │
+  │  Memtable ─────────────────────────────┐                │
+  │       │                                │                │
+  │       ▼                                │ merge by       │
+  │  Bloom Filter (SSTable 3) → maybe? ──► │ timestamp      │
+  │  Bloom Filter (SSTable 2) → no! skip   │ (newest wins)  │
+  │  Bloom Filter (SSTable 1) → maybe? ──► │                │
+  │                                        ▼                │
+  │                                   Return result         │
+  └─────────────────────────────────────────────────────────┘
+
+COMPACTION (background maintenance):
+  SSTables accumulate over time (each flush creates a new one).
+  Compaction merges them: removes deleted data (tombstones),
+  resolves duplicates, creates fewer/larger SSTables.
+
+  Strategies:
+    Size-Tiered (STCS):  merge SSTables of similar size. Good for writes.
+    Leveled (LCS):       fixed-size SSTables in levels. Good for reads.
+    Time-Window (TWCS):  group by time window. Best for time-series.
 ```
 
 ## Key Concepts for Interviews

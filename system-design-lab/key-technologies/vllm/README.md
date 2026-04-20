@@ -4,6 +4,57 @@
 
 vLLM is the **fastest open-source LLM inference engine**. Its key innovation is **PagedAttention** — managing KV cache memory like an OS manages virtual memory. This eliminates memory waste and enables 2-4x higher throughput than naive serving.
 
+## History & Why It Exists
+
+```
+The problem (2023):
+  LLM inference is MEMORY-BOUND, not compute-bound.
+  The bottleneck is the KV cache — stored attention state for each
+  token in each layer. For a 13B model with 2048 context:
+    KV cache per request ≈ 800MB
+    GPU memory = 80GB (A100)
+    → Only ~100 concurrent requests fit in memory.
+
+  Naive serving engines pre-allocate a contiguous block of memory
+  for the maximum possible sequence length per request.
+  If max_seq_len = 2048 but actual sequence is 200 tokens:
+    1848 tokens worth of memory WASTED per request.
+    Internal fragmentation: 60-80% of GPU memory wasted.
+
+  Woosuk Kwon at UC Berkeley (Ion Stoica's group — same lab as
+  Spark and Ray) realized: this is EXACTLY the same problem that
+  operating systems solved in the 1960s with VIRTUAL MEMORY.
+  Instead of contiguous allocation, use PAGING.
+
+PagedAttention insight:
+  OS virtual memory:       app gets contiguous virtual addresses
+                           → mapped to scattered physical pages
+  PagedAttention:          each request gets a contiguous logical KV cache
+                           → mapped to scattered physical KV blocks in GPU memory
+
+  No pre-allocation. No internal fragmentation. Memory used = memory needed.
+  Result: 2-4x more requests fit in GPU memory → 2-4x higher throughput.
+
+Timeline:
+  2023  vLLM paper: "Efficient Memory Management for Large Language
+        Model Serving with PagedAttention" (Kwon et al., UC Berkeley)
+  2023  Open-sourced, immediately becomes most popular LLM serving engine
+  2024  Continuous batching, speculative decoding, tensor parallelism
+  2024  vLLM adopted by virtually every LLM deployment
+  2025  vLLM v1.0+ (production-grade, multi-node, disaggregated serving)
+
+Key innovations:
+  1. PagedAttention: paged KV cache (the core idea)
+  2. Continuous batching: new requests join mid-batch (no waiting)
+  3. Prefix caching: shared system prompts computed once
+  4. Speculative decoding: draft model proposes, main model verifies
+  5. Tensor/pipeline parallelism: scale across GPUs and nodes
+
+Who uses it:
+  Most companies serving open-source LLMs. Widely used for
+  Llama, Mistral, Qwen, DeepSeek deployments in production.
+```
+
 ## The Problem vLLM Solves
 
 ```

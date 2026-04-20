@@ -4,6 +4,50 @@
 
 PostgreSQL is the **default choice for SQL databases** in system design. When the interviewer hears "relational database," they're likely thinking PostgreSQL. It's ACID-compliant, extensible, and handles complex queries well.
 
+## History & Why It Exists
+
+```
+The problem (1986):
+  Michael Stonebraker at UC Berkeley wanted to build a database that
+  could handle COMPLEX DATA TYPES — not just integers and strings,
+  but geographic data, arrays, custom types. Relational databases
+  at the time (Ingres, Oracle) were rigid.
+
+  He built POSTGRES (Post-Ingres) as a research project.
+  "What if a database was EXTENSIBLE? Users define new types,
+  operators, index methods, and the database treats them as first-class."
+
+Timeline:
+  1986  Michael Stonebraker starts POSTGRES at UC Berkeley
+  1995  Postgres95 — SQL support added (replacing original QUEL language)
+  1996  Renamed to PostgreSQL. Community-driven development begins.
+  2005  PostgreSQL 8.0 (Windows support, savepoints, tablespaces)
+  2010  PostgreSQL 9.0 (streaming replication — finally built-in!)
+  2012  PostgreSQL 9.2 (JSON support)
+  2016  PostgreSQL 10 (logical replication, partitioning, parallelism)
+  2020  PostgreSQL 13 (incremental sort, deduplication)
+  2023  PostgreSQL 16 (logical replication improvements, parallelism)
+  2024  PostgreSQL 17 (incremental backup, new JSON functions)
+
+Why PostgreSQL won:
+  1. EXTENSIBILITY: PostGIS (geography), pgvector (embeddings),
+     pg_trgm (fuzzy search), TimescaleDB (time-series).
+     You can extend PostgreSQL for ALMOST any use case.
+  2. CORRECTNESS: strictest SQL compliance. MVCC done right.
+  3. OPEN SOURCE: no corporate owner. BSD license. Truly community-driven.
+  4. "Use Postgres until it hurts, then keep using Postgres."
+
+PostgreSQL vs MySQL:
+  MySQL: simpler, faster for simple reads, easier replication
+  PostgreSQL: more features, stricter correctness, better for complex queries
+  2010s: PostgreSQL overtook MySQL in new projects.
+  Today: PostgreSQL is the default recommendation for any new SQL workload.
+
+Who uses it:
+  Apple, Instagram (largest PG deployment), Reddit, Spotify,
+  Twitch, UK Government, Supabase (PG as a service).
+```
+
 ## When to Choose PostgreSQL
 
 | Use Case | Why PostgreSQL |

@@ -4,6 +4,49 @@
 
 ClickHouse is a **columnar OLAP database** built for analytics. It can scan billions of rows per second on a single node. Choose it when you need fast aggregation queries (COUNT, SUM, AVG) over massive datasets — dashboards, metrics, ad analytics.
 
+## History & Why It Exists
+
+```
+The problem (2009):
+  Yandex (Russia's Google) needed to analyze petabytes of web analytics
+  data (Yandex.Metrica — their Google Analytics competitor).
+
+  Existing options:
+    MySQL: row-oriented, too slow for aggregation over billions of rows
+    Hadoop/Hive: minutes per query, not interactive
+    Vertica/Teradata: expensive commercial columnar DBs
+    Google BigQuery: didn't exist yet (launched 2012)
+
+  Yandex engineers built ClickHouse as an internal columnar database
+  designed from scratch for one thing: scan billions of rows per second
+  on commodity hardware.
+
+Timeline:
+  2009  Development started at Yandex for Metrica
+  2016  Open-sourced (already processing 13 trillion rows per day)
+  2021  ClickHouse Inc. founded (raised $250M, spun out of Yandex)
+  2023  ClickHouse Cloud (managed service) generally available
+  2024  Fastest-growing OLAP database by adoption
+
+Key design philosophy:
+  - Columnar storage: only read columns you need (skip the rest)
+  - Vectorized execution: process data in batches of columns (SIMD-friendly)
+  - Compression: same-type data in columns compresses 10-100x
+  - Single node speed FIRST: one ClickHouse node outperforms most
+    distributed systems. Scale out only when needed.
+  - No transactions: not ACID, append-mostly, eventual merge
+
+What makes ClickHouse special vs other columnar DBs:
+  - Written in C++ with extreme low-level optimization
+  - Vectorized execution (not Volcano/row-at-a-time model)
+  - 100+ functions optimized per CPU architecture (SSE/AVX)
+  - MergeTree engine family handles indexing, partitioning, TTL
+  - Can ingest millions of rows/sec while serving queries simultaneously
+
+Who uses it:
+  Cloudflare (DNS analytics), Uber, eBay, Spotify, Gitlab, Bloomberg
+```
+
 ## When to Choose ClickHouse
 
 | Use Case | Why ClickHouse |
@@ -35,6 +78,105 @@ Query: SELECT AVG(price)          │29.99 │ 9.99 │49.99 │19.99 │  ← p
                                     Only read the price column!
                                     Skip id and city entirely.
                                     + Same-type data compresses 10-100x
+```
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                  ClickHouse Server Architecture                   │
+│                                                                   │
+│  SQL Query: SELECT city, COUNT(*) FROM events                    │
+│             WHERE date = '2024-01-15' GROUP BY city              │
+│       │                                                           │
+│       ▼                                                           │
+│  ┌──────────────┐                                                │
+│  │    Parser     │  SQL → AST                                    │
+│  └──────┬───────┘                                                │
+│         ▼                                                        │
+│  ┌──────────────┐                                                │
+│  │   Analyzer    │  Resolve tables, columns, types                │
+│  └──────┬───────┘                                                │
+│         ▼                                                        │
+│  ┌──────────────┐                                                │
+│  │  Query Planner│  Logical plan → physical plan                 │
+│  │  + Optimizer  │  Partition pruning, column pruning,           │
+│  │              │  predicate pushdown, projection pushdown       │
+│  └──────┬───────┘                                                │
+│         ▼                                                        │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │         Vectorized Execution Engine                       │    │
+│  │                                                           │    │
+│  │  Process data in COLUMNS, not rows.                       │    │
+│  │  Each step processes a BLOCK of N values (e.g., 65536)    │    │
+│  │  at once using SIMD instructions.                         │    │
+│  │                                                           │    │
+│  │  Pipeline:                                                │    │
+│  │    ReadFromMergeTree → Filter → Aggregate → Sort → Output│    │
+│  │    (each step processes 65K values at a time)             │    │
+│  │                                                           │    │
+│  │  vs row-at-a-time (Volcano model, PostgreSQL):            │    │
+│  │    Process 1 row → pass up → process 1 row → pass up     │    │
+│  │    Branch prediction misses, function call overhead.       │    │
+│  │                                                           │    │
+│  │  Vectorized: process 65K values → pass column up          │    │
+│  │    CPU cache-friendly, SIMD-optimized, minimal overhead.  │    │
+│  └──────────────────────────────────────────────────────────┘    │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │              MergeTree Storage Engine                      │    │
+│  │                                                           │    │
+│  │  Each table is split into PARTITIONS (e.g., by month)     │    │
+│  │  Each partition contains PARTS (sorted data chunks)        │    │
+│  │                                                           │    │
+│  │  Table: events                                            │    │
+│  │  ├── 202401/                  (January partition)          │    │
+│  │  │   ├── part_1/                                          │    │
+│  │  │   │   ├── city.bin         (city column, compressed)   │    │
+│  │  │   │   ├── date.bin         (date column, compressed)   │    │
+│  │  │   │   ├── value.bin        (value column, compressed)  │    │
+│  │  │   │   ├── primary.idx      (sparse index)              │    │
+│  │  │   │   └── count.txt        (row count)                 │    │
+│  │  │   └── part_2/                                          │    │
+│  │  └── 202402/                  (February partition)         │    │
+│  │      └── part_1/                                          │    │
+│  │                                                           │    │
+│  │  Sparse index: NOT every row indexed.                     │    │
+│  │  Index stores value every 8192 rows (granule).            │    │
+│  │  Query: WHERE date = '2024-01-15'                         │    │
+│  │    → skip February partition entirely (partition pruning)  │    │
+│  │    → within January, check sparse index granules           │    │
+│  │    → read only matching granules, skip the rest            │    │
+│  └──────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘
+
+WRITE PATH:
+  INSERT → data sorted by ORDER BY key → written as new PART
+  → background merge combines parts (like LSM-tree compaction)
+
+  INSERT is BATCHED. Don't insert row-by-row!
+  Recommended: batches of 10K-100K rows per INSERT.
+
+  Each part is immutable once written. Merge creates
+  new parts, deletes old ones. No in-place update.
+
+DISTRIBUTED QUERY (multi-node cluster):
+  ┌──────────────────────────────────────────────────┐
+  │                                                    │
+  │  Client → any node (coordinator)                  │
+  │            │                                       │
+  │            ├──► Shard 1: scan + partial aggregate  │
+  │            ├──► Shard 2: scan + partial aggregate  │
+  │            └──► Shard 3: scan + partial aggregate  │
+  │                      │                             │
+  │                      ▼                             │
+  │            Coordinator merges partial results      │
+  │            Returns final result to client          │
+  │                                                    │
+  │  Sharding by column (e.g., hash of user_id)       │
+  │  Replication between shard replicas for HA         │
+  └──────────────────────────────────────────────────┘
 ```
 
 ## Key Concepts for Interviews
