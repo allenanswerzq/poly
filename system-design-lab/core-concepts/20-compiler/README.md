@@ -4,7 +4,7 @@
 
 Every program you write goes through a compiler (or interpreter). Understanding how compilers work explains WHY certain optimizations exist, what `torch.compile` and JAX's XLA actually do, why LLVM dominates the world, and how MLIR is reshaping ML infrastructure. If you're building or optimizing ML systems, compilers are no longer optional knowledge.
 
-## 1. What a Compiler Actually Does
+## 1. What a Compiler Actually Doesz
 
 ```
 Source code → Compiler → Machine code (or IR)

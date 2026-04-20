@@ -189,6 +189,223 @@ fn process<T: Summary + Display + Clone>(item: &T) { ... }
 └──────────────────┴──────────────────────────────────────────────┘
 ```
 
+### Marker Traits — Send, Sync, Sized, Unpin
+
+These are **auto traits** — the compiler implements them automatically when safe. They carry no methods; they're pure compile-time contracts.
+
+```
+┌──────────┬──────────────────────────────────────────────────────────────┐
+│ Trait    │ Meaning                                                      │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Send     │ A type can be TRANSFERRED to another thread.                 │
+│          │ "I can give this value to another thread."                   │
+│          │                                                              │
+│ Sync     │ A type can be REFERENCED from multiple threads (&T is Send).│
+│          │ "Multiple threads can read this simultaneously."            │
+│          │                                                              │
+│ Sized    │ Size known at compile time. Most types are Sized.           │
+│          │ str and [T] are NOT Sized (dynamically sized types / DSTs). │
+│          │                                                              │
+│ Unpin    │ Type can be safely moved in memory after being pinned.      │
+│          │ Most types are Unpin. Self-referential futures are !Unpin.  │
+└──────────┴──────────────────────────────────────────────────────────────┘
+```
+
+#### Send & Sync — The Thread Safety Duo
+
+```rust
+// Most types are Send + Sync automatically.
+// The compiler derives them based on what the type contains.
+
+// ✓ Send + Sync:  i32, String, Vec<T>, Arc<T>, Mutex<T>
+// ✓ Send, !Sync:  Cell<T>, RefCell<T>   (interior mutability, not thread-safe)
+// !Send, !Sync:   Rc<T>, *mut T          (raw pointers, Rc is single-threaded)
+
+// WHY this matters: the compiler ENFORCES these at every boundary.
+
+use std::rc::Rc;
+use std::sync::Arc;
+
+// ✗ COMPILE ERROR — Rc is !Send, can't send to another thread
+let data = Rc::new(42);
+std::thread::spawn(move || {
+    println!("{data}");  // error: Rc<i32> cannot be sent between threads safely
+});
+
+// ✓ Arc is Send + Sync — this compiles
+let data = Arc::new(42);
+std::thread::spawn(move || {
+    println!("{data}");  // OK
+});
+```
+
+```
+The relationship between Send and Sync:
+
+  T is Sync  ⟺  &T is Send
+
+  If you can safely share a reference (&T) across threads, T is Sync.
+  If you can safely move the value itself to another thread, T is Send.
+
+  Why Mutex<T> is Sync (even though it contains mutable data):
+    &Mutex<T> only lets you .lock() → one thread at a time.
+    The Mutex ensures exclusive access. Safe to share the reference.
+
+  Why RefCell<T> is !Sync:
+    &RefCell<T> lets you .borrow_mut() without compile-time checks.
+    Two threads could call .borrow_mut() simultaneously → data race.
+    RefCell uses runtime checks that are NOT atomic → not thread-safe.
+
+  Why Rc<T> is !Send:
+    Rc uses non-atomic reference counting. If you moved it to another
+    thread, both threads could increment/decrement the count simultaneously
+    → corrupted refcount → use-after-free. Use Arc instead (atomic).
+```
+
+#### Sized — Compile-Time Known Size
+
+```rust
+// Almost everything is Sized:
+//   i32: 4 bytes. String: 24 bytes (ptr + len + cap). Vec<T>: 24 bytes.
+
+// Dynamically Sized Types (DSTs) are NOT Sized:
+//   str     — a string of unknown length
+//   [T]     — a slice of unknown length
+//   dyn Trait — a trait object of unknown concrete type
+
+// You can never have a bare DST on the stack. Always behind a pointer:
+//   &str, &[T], &dyn Trait        — fat pointer (ptr + len or ptr + vtable)
+//   Box<str>, Box<[T]>, Box<dyn Trait>
+
+// Generic params are Sized by default:
+fn foo<T>(t: T) {}            // T: Sized (implicit)
+fn bar<T: ?Sized>(t: &T) {}   // T might NOT be Sized (opt out with ?Sized)
+//                                 allows bar(&str), bar(&[i32]), etc.
+
+// Why ?Sized matters:
+//   fn print_len(s: &str) {}        — only accepts &str
+//   fn print_len<T: AsRef<str>>(s: &T) {} — accepts String, &str, etc.
+//   The ?Sized bound is needed anytime you want to accept unsized types.
+```
+
+#### Unpin — Safe to Move After Pinning
+
+```rust
+// Most types are Unpin — you don't think about this day-to-day.
+// It only matters for self-referential types, mainly async futures.
+
+// async fn produces a Future that may contain self-references:
+async fn example() {
+    let data = vec![1, 2, 3];
+    let r = &data;        // r points to data (self-referential!)
+    some_async_op().await; // future is suspended here, r must stay valid
+    println!("{r:?}");
+}
+// If the future were moved in memory, r would be a dangling pointer.
+// Pin<&mut Future> prevents moving it → self-references stay valid.
+
+// In practice:
+//   - You rarely implement !Unpin manually
+//   - Box::pin() and tokio::pin!() handle it for you
+//   - tokio::spawn requires Send, not Unpin (futures are pinned internally)
+//   - You'll hit Pin when writing manual Future impls or low-level async code
+```
+
+### Other Essential Std Traits
+
+```rust
+// --- Clone & Copy ---
+// Clone: explicit deep copy via .clone()
+// Copy:  implicit bitwise copy (assignment copies, not moves)
+//        Only for small, stack-only types: i32, f64, bool, (i32, i32), etc.
+//        Copy implies Clone. Copy types are never moved, always copied.
+
+let a: i32 = 5;
+let b = a;       // Copy — a is still valid
+let s = String::from("hello");
+let t = s;       // Move — s is invalidated (String is NOT Copy)
+
+// --- From / Into ---
+// The standard way to do type conversions. Implement From, get Into free.
+impl From<i32> for MyType {
+    fn from(val: i32) -> Self { MyType(val) }
+}
+let x: MyType = 42.into();        // uses Into (auto-derived from From)
+let y: MyType = MyType::from(42); // uses From directly
+
+// The ? operator uses From to convert error types:
+fn read() -> Result<(), MyError> {
+    let f = std::fs::read("x")?;  // io::Error → MyError via From
+    Ok(())
+}
+
+// --- Deref & DerefMut ---
+// Smart pointer coercion. Makes Box<T>, Arc<T>, Vec<T> act like T.
+let s: Box<String> = Box::new(String::from("hello"));
+// s.len() works because Box<String> derefs to String, which derefs to str.
+// Deref chain: Box<String> → String → str → .len()
+
+// --- Drop ---
+// Destructor. Called automatically when value goes out of scope.
+// Used for: closing files, releasing locks, freeing memory.
+impl Drop for MyResource {
+    fn drop(&mut self) {
+        println!("cleaning up!");
+    }
+}
+// You can't call .drop() manually. Use std::mem::drop(value) to drop early.
+
+// --- Default ---
+// Provides a default value. #[derive(Default)] works for structs if all fields are Default.
+#[derive(Default)]
+struct Config {
+    retries: u32,      // defaults to 0
+    verbose: bool,     // defaults to false
+    name: String,      // defaults to ""
+}
+let cfg = Config::default();
+let cfg = Config { retries: 3, ..Default::default() };  // partial override
+
+// --- AsRef & AsMut ---
+// Cheap reference conversions. Makes APIs flexible.
+fn read_file(path: impl AsRef<Path>) {
+    let p: &Path = path.as_ref();
+    // accepts: &str, String, PathBuf, &Path — all implement AsRef<Path>
+}
+
+// --- PartialEq / Eq, PartialOrd / Ord, Hash ---
+// Comparison and hashing. Usually #[derive].
+// PartialEq: ==, !=    (f64 is PartialEq but NOT Eq — NaN != NaN)
+// Eq: full equivalence  (required for HashMap keys)
+// Ord: total ordering   (required for BTreeMap keys)
+// Hash: hashing         (required for HashMap keys, must agree with Eq)
+#[derive(PartialEq, Eq, Hash)]
+struct UserId(u64);
+```
+
+### Trait Cheat Sheet — When to Use What
+
+```
+Want to...                         → Use this trait
+─────────────────────────────────────────────────────
+Print for debugging                → Debug     (derive)
+Print for users                    → Display   (manual impl)
+Compare equality                   → PartialEq, Eq (derive)
+Sort / order                       → PartialOrd, Ord (derive)
+Use as HashMap key                 → Eq + Hash (derive both)
+Convert between types              → From / Into
+Accept flexible input              → AsRef<T>
+Clone explicitly                   → Clone (derive)
+Copy implicitly (small types)      → Copy + Clone (derive)
+Custom cleanup logic               → Drop (manual impl)
+Provide sensible default           → Default (derive)
+Send to another thread             → Send (auto, don't impl manually)
+Share reference across threads     → Sync (auto, don't impl manually)
+Accept dynamically-sized types     → ?Sized bound
+Work with async / Pin              → Unpin (auto for most types)
+Serialize / deserialize            → serde::Serialize, Deserialize (derive)
+```
+
 ---
 
 ## 5. Enums & Pattern Matching
