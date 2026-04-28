@@ -99,6 +99,15 @@ Example: Chat messages
 │  │                                                           │    │
 │  │  1. Commit Log (append-only, sequential write to disk)    │    │
 │  │     └─► crash recovery: replay log after restart          │    │
+│  │     └─► fsync behavior (commitlog_sync in cassandra.yaml):│    │
+│  │         periodic (DEFAULT): fsync every 10s. Writes go to │    │
+│  │           OS page cache first. Up to 10s data loss on     │    │
+│  │           POWER FAILURE (not process crash). Fastest.     │    │
+│  │         batch: fsync every write. No data loss. Slower.   │    │
+│  │         group: batch concurrent writes into one fsync.    │    │
+│  │         Why periodic is OK: RF=3 means 3 nodes have the  │    │
+│  │           data. All 3 losing power in same 10s = near zero│    │
+│  │           probability. Replication covers the gap.        │    │
 │  │                                                           │    │
 │  │  2. Memtable (in-memory sorted structure, per table)      │    │
 │  │     └─► sorted by clustering key (e.g., sent_at)          │    │
@@ -116,6 +125,21 @@ Example: Chat messages
 │                                                                   │
 │  Write acknowledged when CL nodes confirm (QUORUM = 2 of 3)     │
 └──────────────────────────────────────────────────────────────────┘
+
+The full durability ladder:
+Level 0: Memory only                    → lose everything on crash
+Level 1: WAL on single disk             → survive crash, not disk failure
+Level 2: WAL + replication (same DC)    → survive disk/machine failure
+Level 3: WAL + replication (multi-DC)   → survive datacenter failure
+Level 4: WAL + replication + backups    → survive operator error (rm -rf)
+
+Each level costs more latency:
+  Level 0: ~1μs
+  Level 1: ~10μs   (one fsync)
+  Level 2: ~1-5ms  (network round-trip within DC)
+  Level 3: ~50-100ms (cross-DC network)
+
+You pick the level based on how much data loss you can tolerate.
 
 WRITE PATH (why writes are ~1ms):
   Client → Coordinator → Commit Log (sequential append) → Memtable (memory)

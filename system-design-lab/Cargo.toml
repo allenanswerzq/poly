@@ -49,6 +49,7 @@ members = [
     "patterns/real-time-updates",
     "patterns/handling-contention",
     "data-structures",
+    "key-technologies/foundationdb",
 ]
 
 [workspace.dependencies]
