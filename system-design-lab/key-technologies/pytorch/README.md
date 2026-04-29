@@ -2,7 +2,7 @@
 
 ## Overview
 
-PyTorch is the **dominant framework for ML research and increasingly for production**. As a principal engineer, you need to understand its execution model, distributed training primitives, and how it maps to hardware.
+PyTorch is the **dominant framework for ML research and increasingly for production**. you need to understand its execution model, distributed training primitives, and how it maps to hardware.
 
 ## History & Why It Exists
 
