@@ -1,6 +1,133 @@
 # Kubernetes (K8s)
 
-## What Problem Does It Solve?
+## Docker, Containers, and Kubernetes — How They Relate
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    The Container Ecosystem                               │
+│                                                                          │
+│  CONTAINERS (the concept):                                               │
+│    A way to package and run applications in isolated environments.       │
+│    Just a Linux process with namespaces (isolation) + cgroups (limits).  │
+│    NOT a VM — shares the host kernel.                                    │
+│                                                                          │
+│  DOCKER (the tool):                                                      │
+│    Makes containers EASY to use. Before Docker (2013), containers        │
+│    existed (LXC) but were painful to set up.                             │
+│    Docker gives you:                                                     │
+│      • Dockerfile — recipe to build an image                            │
+│      • docker build — package your app + dependencies into an image     │
+│      • docker push/pull — share images via registries (Docker Hub)      │
+│      • docker run — start a container from an image                     │
+│                                                                          │
+│  CONTAINER IMAGE (OCI image):                                            │
+│    A filesystem snapshot: your binary + libraries + config.              │
+│    Built with docker build (or podman, buildah, kaniko).                 │
+│    Stored in a registry (Docker Hub, AWS ECR, GCP GCR, GitHub GHCR).    │
+│    Immutable — same image always produces the same container.            │
+│                                                                          │
+│  KUBERNETES (the orchestrator):                                          │
+│    Docker runs ONE container on ONE machine.                             │
+│    Kubernetes runs THOUSANDS of containers across HUNDREDS of machines.  │
+│    K8s decides WHERE to run each container, restarts crashed ones,       │
+│    scales up/down, handles networking between them.                      │
+│                                                                          │
+│  Think of it as:                                                         │
+│    Docker    = "how to run a container"     (single machine)             │
+│    Kubernetes = "how to manage containers"  (fleet of machines)          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+The relationship:
+
+  ┌────────────────┐     ┌────────────────┐     ┌────────────────────────┐
+  │   Dockerfile   │────►│  Docker Image   │────►│  Container Registry    │
+  │   (recipe)     │build│  (my-app:v2)    │push │  (Docker Hub / ECR)    │
+  └────────────────┘     └────────────────┘     └───────────┬────────────┘
+                                                             │ pull
+                                                             ▼
+                                                  ┌────────────────────┐
+                                                  │    Kubernetes       │
+                                                  │  "run 5 copies of  │
+                                                  │   my-app:v2 across │
+                                                  │   these 20 nodes"  │
+                                                  └────────────────────┘
+
+  You BUILD images with Docker.
+  You STORE images in a registry.
+  You RUN and MANAGE containers with Kubernetes.
+```
+
+### Docker vs Kubernetes — Different Jobs
+
+```
+┌──────────────────────┬────────────────────────────────────────────────────┐
+│                      │ Docker alone           │ Kubernetes                │
+├──────────────────────┼────────────────────────┼───────────────────────────┤
+│ Run a container      │ docker run my-app      │ kubectl apply -f pod.yaml │
+│ On how many machines │ 1                      │ 1 to 10,000+              │
+│ Container crashes    │ stays dead (or --restart)│ K8s restarts it auto     │
+│ Need 5 copies        │ run docker 5 times     │ replicas: 5 (declarative) │
+│ Load balancing       │ you figure it out       │ built-in (Service)        │
+│ Rolling update       │ manual (stop old, start)│ automatic, zero-downtime  │
+│ Machine dies         │ containers gone         │ K8s reschedules elsewhere │
+│ Service discovery    │ hardcode IPs or links   │ DNS-based (svc-name:port) │
+│ Resource limits      │ docker run --memory=4g  │ declarative per pod       │
+│ Secrets management   │ env vars or files       │ built-in (K8s Secrets)    │
+│ Auto-scaling         │ no                      │ HPA (based on CPU/custom) │
+└──────────────────────┴────────────────────────┴───────────────────────────┘
+
+One way to think about it:
+  Docker = a chef who can cook one dish really well
+  Kubernetes = a restaurant manager who coordinates 50 chefs,
+               decides which chef cooks what, replaces sick chefs,
+               handles the dinner rush by hiring more
+```
+
+### The Container Runtime (Docker is no longer required by K8s!)
+
+```
+Fun fact: Kubernetes DROPPED Docker support in v1.24 (2022).
+
+  Before:  K8s → dockershim → Docker → containerd → runc → container
+  After:   K8s → containerd → runc → container
+                 (or CRI-O → runc → container)
+
+  Docker was a middleman. K8s talked to Docker, Docker talked to containerd,
+  containerd actually ran the container. Removing Docker removed one layer.
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │  Container Runtime Stack:                                    │
+  │                                                              │
+  │  Kubernetes (kubelet)                                        │
+  │       │                                                      │
+  │       ▼  CRI (Container Runtime Interface)                   │
+  │  ┌──────────────┐    ┌──────────────┐                       │
+  │  │  containerd   │ or │   CRI-O      │  ← high-level runtime│
+  │  │ (Docker's guts│    │ (Red Hat)    │    manages images,    │
+  │  │  extracted)   │    │              │    lifecycle           │
+  │  └──────┬───────┘    └──────┬───────┘                       │
+  │         ▼                    ▼                                │
+  │  ┌──────────────────────────────────┐                       │
+  │  │           runc                    │  ← low-level runtime  │
+  │  │  Actually creates the container:  │    sets up namespaces, │
+  │  │  clone() + unshare() + exec()     │    cgroups, exec      │
+  │  └──────────────────────────────────┘                       │
+  │                                                              │
+  │  Your Docker images still work! The IMAGE FORMAT is standard │
+  │  (OCI). Only the RUNTIME changed. docker build still works.  │
+  │  You just don't need Docker installed on K8s nodes anymore.  │
+  └─────────────────────────────────────────────────────────────┘
+
+  What you still use Docker for:
+    ✓ Building images (docker build / Dockerfile)
+    ✓ Local development (docker run, docker compose)
+    ✓ CI/CD pipelines (build + push images)
+
+  What K8s no longer needs Docker for:
+    ✗ Running containers on K8s nodes (containerd does this directly)
+```
+
+## What Problem Does K8s Solve?
 
 Before K8s, deploying services was manual and fragile:
 

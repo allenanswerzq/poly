@@ -34,6 +34,217 @@ GPU: optimize for THROUGHPUT (10000 tasks parallel)
 
 ## 2. GPU Architecture (NVIDIA)
 
+### Full Chip View — From PCIe Slot to CUDA Core
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        NVIDIA A100 GPU — Full Chip Layout                     │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐ │
+│  │                         PCIe / NVLink Interface                          │ │
+│  │  PCIe Gen4 x16 (32 GB/s) for CPU ↔ GPU data transfers                  │ │
+│  │  NVLink 3.0: 12 links × 50 GB/s = 600 GB/s total (GPU ↔ GPU)          │ │
+│  │  NVSwitch: all-to-all connectivity for multi-GPU (DGX A100)            │ │
+│  └────────────────────────────────┬────────────────────────────────────────┘ │
+│                                   │                                          │
+│  ┌────────────────────────────────▼────────────────────────────────────────┐ │
+│  │                     GigaThread Engine                                    │ │
+│  │  Top-level work distributor. Receives kernel launch from CPU driver.    │ │
+│  │  Distributes thread blocks (CTAs) across GPCs and SMs.                  │ │
+│  │  Manages scheduling, load balancing, context switching between kernels. │ │
+│  └────────────────────────────────┬────────────────────────────────────────┘ │
+│                                   │                                          │
+│  ┌────────────────────────────────▼────────────────────────────────────────┐ │
+│  │                         8 GPCs (Graphics Processing Clusters)           │ │
+│  │                                                                          │ │
+│  │  ┌──────────────────────────────────────────────────────────────────┐   │ │
+│  │  │  GPC 0                          GPC 1                            │   │ │
+│  │  │  ┌──────────────────────────┐  ┌──────────────────────────┐     │   │ │
+│  │  │  │  Raster Engine           │  │  Raster Engine           │     │   │ │
+│  │  │  │  (graphics only, idle    │  │  (graphics only, idle    │     │   │ │
+│  │  │  │   during compute)        │  │   during compute)        │     │   │ │
+│  │  │  │                          │  │                          │     │   │ │
+│  │  │  │  ┌────┐┌────┐           │  │  ┌────┐┌────┐           │     │   │ │
+│  │  │  │  │SM 0││SM 1│           │  │  │SM14││SM15│           │     │   │ │
+│  │  │  │  └────┘└────┘           │  │  └────┘└────┘           │     │   │ │
+│  │  │  │  ┌────┐┌────┐           │  │  ┌────┐┌────┐           │     │   │ │
+│  │  │  │  │SM 2││SM 3│  ...      │  │  │SM16││SM17│  ...      │     │   │ │
+│  │  │  │  └────┘└────┘           │  │  └────┘└────┘           │     │   │ │
+│  │  │  │  ...                     │  │  ...                     │     │   │ │
+│  │  │  │  ┌────┐┌────┐           │  │  ┌────┐┌────┐           │     │   │ │
+│  │  │  │  │SM12││SM13│           │  │  │SM26││SM27│           │     │   │ │
+│  │  │  │  └────┘└────┘           │  │  └────┘└────┘           │     │   │ │
+│  │  │  │  (14 SMs per GPC)       │  │  (14 SMs per GPC)       │     │   │ │
+│  │  │  └──────────────────────────┘  └──────────────────────────┘     │   │ │
+│  │  │                                                                  │   │ │
+│  │  │  GPC 2 ... GPC 7  (6 more GPCs, same structure)                 │   │ │
+│  │  │                                                                  │   │ │
+│  │  │  Total: 8 GPCs × ~14 SMs = 108 SMs (A100 has 128, 20 disabled) │   │ │
+│  │  └──────────────────────────────────────────────────────────────────┘   │ │
+│  └────────────────────────────────┬────────────────────────────────────────┘ │
+│                                   │                                          │
+│  ┌────────────────────────────────▼────────────────────────────────────────┐ │
+│  │                         L2 Cache — 40 MB                                │ │
+│  │  Shared by ALL 108 SMs. Hardware-managed (you don't control it).       │ │
+│  │  Partitioned into slices, each slice associated with an HBM channel.   │ │
+│  │  Caches global memory reads. Reduces HBM traffic.                      │ │
+│  │  Bandwidth: ~5 TB/s (much faster than HBM)                             │ │
+│  └────────────────────────────────┬────────────────────────────────────────┘ │
+│                                   │                                          │
+│  ┌────────────────────────────────▼────────────────────────────────────────┐ │
+│  │                    Memory Controllers (8 channels)                      │ │
+│  │  Each controller connects to a stack of HBM2e chips.                   │ │
+│  │  8 channels × 256-bit bus = 5120-bit total memory bus.                 │ │
+│  └────────────────────────────────┬────────────────────────────────────────┘ │
+│                                   │                                          │
+│  ┌────────────────────────────────▼────────────────────────────────────────┐ │
+│  │                     HBM2e (High Bandwidth Memory)                       │ │
+│  │                                                                          │ │
+│  │   ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐       │ │
+│  │   │Stack 0│ │Stack 1│ │Stack 2│ │Stack 3│ │Stack 4│ │Stack 5│       │ │
+│  │   │10 GB  │ │10 GB  │ │10 GB  │ │10 GB  │ │10 GB  │ │10 GB  │ ...  │ │
+│  │   └───────┘ └───────┘ └───────┘ └───────┘ └───────┘ └───────┘       │ │
+│  │                                                                          │ │
+│  │   8 stacks × 10 GB = 80 GB total                                       │ │
+│  │   Aggregate bandwidth: 2,039 GB/s (~2 TB/s)                            │ │
+│  │                                                                          │ │
+│  │   HBM sits NEXT TO the GPU die (on the same package substrate)         │ │
+│  │   Connected by thousands of tiny wires (silicon interposer)            │ │
+│  │   This physical proximity is why bandwidth is so high vs DDR5          │ │
+│  │                                                                          │ │
+│  │   ┌──────────────────────────────────────────────────┐                  │ │
+│  │   │  Physical layout (top-down view of the package): │                  │ │
+│  │   │                                                   │                  │ │
+│  │   │  ┌─────┐ ┌─────┐                   ┌─────┐ ┌─────┐│                 │ │
+│  │   │  │HBM 0│ │HBM 1│   ┌───────────┐   │HBM 4│ │HBM 5││                 │ │
+│  │   │  └─────┘ └─────┘   │           │   └─────┘ └─────┘│                 │ │
+│  │   │                     │  GPU Die  │                   │                 │ │
+│  │   │  ┌─────┐ ┌─────┐   │ (826 mm²) │   ┌─────┐ ┌─────┐│                 │ │
+│  │   │  │HBM 2│ │HBM 3│   │           │   │HBM 6│ │HBM 7││                 │ │
+│  │   │  └─────┘ └─────┘   └───────────┘   └─────┘ └─────┘│                 │ │
+│  │   │                                                      │                │ │
+│  │   │  Everything on one silicon interposer substrate      │                │ │
+│  │   └──────────────────────────────────────────────────────┘                │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                               │
+│  Also on the chip:                                                           │
+│   • Copy Engines (DMA): handle CPU↔GPU and GPU↔GPU data transfers           │
+│     (run in parallel with compute — this enables CUDA stream overlap)       │
+│   • Video codec: NVDEC (decode) + NVENC (encode) for video processing       │
+│   • Power management: clock gating, voltage/frequency scaling               │
+│   • Debug/profiling: performance counters, warp stall reasons               │
+│                                                                               │
+│  Die size: 826 mm² (A100), 814 mm² (H100) — close to reticle limit!        │
+│  Transistors: 54 billion (A100), 80 billion (H100)                          │
+│  Process: TSMC 7nm (A100), TSMC 4N (H100)                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### How a Kernel Launch Flows Through the Chip
+
+```
+CPU calls: kernel<<<num_blocks, threads_per_block>>>(args)
+     │
+     ▼
+PCIe/NVLink → GPU Command Queue
+     │
+     ▼
+GigaThread Engine
+  "This kernel has 4000 blocks, each 256 threads"
+  "I have 108 SMs available"
+  → Assign blocks to SMs (each SM can run multiple blocks concurrently)
+  → SM 0 gets blocks [0, 108, 216, ...]
+  → SM 1 gets blocks [1, 109, 217, ...]
+  → ...
+     │
+     ▼
+Each SM receives its assigned block:
+  256 threads → 8 warps
+  Warp schedulers pick warps to execute each cycle
+  Instructions fetch data: registers → shared mem → L2 → HBM
+  When a warp stalls on memory → instantly switch to another warp
+     │
+     ▼
+Results written to global memory (HBM)
+  → Copy Engine (DMA) transfers results back to CPU over PCIe
+  → Or stays on GPU for the next kernel
+```
+
+### Blocks vs SMs — Software Model vs Hardware Model
+
+```
+The CUDA programming model has a SOFTWARE hierarchy (what you write)
+and the GPU has a HARDWARE hierarchy (what actually runs it).
+The runtime MAPS software onto hardware:
+
+  SOFTWARE (you control)              HARDWARE (fixed)
+  ──────────────────────              ──────────────────
+  Grid (all blocks)          ───►    GPU (entire chip)
+  Block (256 threads)        ───►    SM (Streaming Multiprocessor)
+  Warp (32 threads)          ───►    32 CUDA cores in lockstep
+  Thread (1 thread)          ───►    1 CUDA core (1 lane)
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  You write:                   Hardware does:                      │
+  │                                                                   │
+  │  kernel<<<4000, 256>>>()      GigaThread Engine takes 4000 blocks│
+  │       ^^^^  ^^^                and distributes them across 108 SMs│
+  │       │     └ threads/block                                       │
+  │       └ blocks                                                    │
+  │                                                                   │
+  │  Block 0   ──► assigned to SM 0                                   │
+  │  Block 1   ──► assigned to SM 1                                   │
+  │  Block 2   ──► assigned to SM 2                                   │
+  │  ...                                                              │
+  │  Block 107 ──► assigned to SM 107                                 │
+  │  Block 108 ──► assigned to SM 0  (SM 0 now runs 2 blocks!)       │
+  │  Block 109 ──► assigned to SM 1                                   │
+  │  ...                                                              │
+  │  Block 3999 ──► assigned to SM (3999 % 108)                      │
+  │                                                                   │
+  │  You DON'T choose which SM runs which block. Hardware decides.   │
+  │  You DON'T even know how many SMs exist when writing the kernel. │
+  │  That's the whole point: your code scales to ANY GPU.            │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Why this separation matters:
+
+  1. PORTABILITY — same kernel runs on any GPU
+     A100: 108 SMs → 108 blocks run in parallel, 4000 blocks finish in ~37 waves
+     RTX 3060: 28 SMs → 28 blocks in parallel, 4000 blocks finish in ~143 waves
+     Same code, same result. Just different speed.
+
+  2. SCALING — launch more blocks than SMs
+     You don't need to know the hardware. Launch enough blocks to
+     cover your data. The runtime fills SMs as blocks complete.
+
+     ┌───────────────────────────────────────────────────────────┐
+     │ Time ──────────────────────────────────────────────────►  │
+     │                                                           │
+     │ SM 0: [Block 0][Block 108][Block 216]...[Block 3888]     │
+     │ SM 1: [Block 1][Block 109][Block 217]...[Block 3889]     │
+     │ SM 2: [Block 2][Block 110][Block 218]...[Block 3890]     │
+     │ ...                                                       │
+     │ SM 107:[Block 107][Block 215][Block 323]...[Block 3999]  │
+     │                                                           │
+     │ Blocks are queued. As soon as an SM finishes a block,    │
+     │ it immediately starts the next one. No idle SMs.          │
+     └───────────────────────────────────────────────────────────┘
+
+  3. RESOURCE ISOLATION — blocks on the same SM share SM resources
+     Each SM has: 256 KB registers, 192 KB shared memory, 64 warps max.
+     Each block RESERVES some of these when it's assigned to the SM.
+
+     If your block uses:
+       64 KB shared memory → SM can fit 3 blocks (3 × 64 = 192 KB)
+       128 registers/thread × 256 threads = 32 KB regs → limited by regs or shared mem
+
+     Fewer resources per block → more blocks per SM → more latency hiding.
+     This is why kernel optimization often means REDUCING resource usage.
+```
+
+### Zooming In — Inside One SM
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     GPU (e.g., A100)                              │
