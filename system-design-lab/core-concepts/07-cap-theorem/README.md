@@ -352,6 +352,79 @@ This confuses everyone:
   SERIALIZABLE is rarely used — too slow for most workloads.
 ```
 
+## How databases implement SERIALIZABLE (three approaches):
+1. ACTUAL SERIAL EXECUTION (simplest)
+   Run one transaction at a time. Literally no concurrency.
+
+   Queue: [T1] [T2] [T3] → execute one by one
+
+   Used by: Redis (single-threaded), VoltDB
+   Works because: transactions are fast (< 1ms).
+   Doesn't work when: transactions are slow or do I/O.
+
+2. TWO-PHASE LOCKING (2PL) — pessimistic
+   Growing phase:  acquire locks on everything you touch (rows, ranges)
+   Shrinking phase: release all locks at commit
+
+   T1 locks row A → T2 wants row A → T2 BLOCKS until T1 commits.
+   Guaranteed serializable but lots of BLOCKING + possible DEADLOCKS.
+
+   Used by: MySQL InnoDB (when you explicitly request SERIALIZABLE)
+
+3. SERIALIZABLE SNAPSHOT ISOLATION (SSI) — optimistic
+   Let transactions run concurrently (no blocking!).
+   Track what each transaction reads and writes.
+   At commit: check if there was a conflict.
+   If conflict detected → ABORT and retry one transaction.
+
+   No blocking → higher throughput. But wasted work on aborts.
+
+   Used by: PostgreSQL (SERIALIZABLE level), CockroachDB
+
+
+WITHOUT TrueTime (traditional approaches):
+
+  Option A: Lock everything (2PL)
+    T1 locks row A → T2 BLOCKED → slow, deadlocks possible
+
+  Option B: Optimistic (SSI)
+    T1 and T2 both run → conflict detected at commit → one ABORTED → wasted work
+
+  Both have a cost: blocking OR retries.
+
+
+WITH TrueTime (Spanner's approach):
+
+  No locks on reads. No aborts. Just timestamps.
+
+  T1 starts at TrueTime [10:00:00.001, 10:00:00.005]
+  T1 commits → assigned timestamp 10:00:00.005 (pick latest)
+  T1 waits until TrueTime.earliest > 10:00:00.005 (~7ms), then commit
+  → NOW we're certain: any future transaction ANYWHERE will have
+    a timestamp > 10:00:00.005
+
+  T2 starts after T1 finished (wall-clock reality)
+  T2's timestamp = 10:00:00.013 (guaranteed > T1's 10:00:00.005)
+  T2 reads data → sees T1's write (because T1's timestamp < T2's)
+
+  Result: T1 ordered before T2. Always. On every replica. Globally.
+  No locks. No aborts. Just time.
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │                                                               │
+  │  Traditional DB (PostgreSQL SERIALIZABLE):                    │
+  │    T1 and T2 touch same row → one blocks or one aborts       │
+  │    Throughput drops under contention                          │
+  │                                                               │
+  │  Spanner with TrueTime:                                       │
+  │    T1 commits at timestamp 100                                │
+  │    T2 commits at timestamp 107                                │
+  │    Order is determined by timestamps, not locks               │
+  │    Reads just check: "show me data as of timestamp T"         │
+  │    → snapshot read, no locking needed                         │
+  │                                                               │
+  └──────────────────────────────────────────────────────────────┘
+
 ### When to use what
 
 | Scenario | Model | Why |

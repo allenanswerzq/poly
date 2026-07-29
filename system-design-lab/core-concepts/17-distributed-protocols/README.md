@@ -323,6 +323,199 @@ Key structs:
 Used by: Dynamo (Amazon), Riak
 ```
 
+## 6.5. Google TrueTime & Hybrid Logical Clocks
+
+**Problem:** Lamport/Vector clocks give you ORDERING but not real timestamps.
+You can't ask "did this event happen at 3:00 PM?" — only "did A happen before B?"
+
+Sometimes you NEED real time (external consistency, TTL expiry, audit logs).
+But clocks across machines DRIFT — two servers disagree on what time it is.
+
+### The Clock Problem
+
+```
+Server A clock: 14:00:00.000
+Server B clock: 14:00:00.003   ← 3ms ahead of A
+
+If A writes at its 14:00:00.001 and B writes at its 14:00:00.002:
+  B thinks it wrote AFTER A.
+  But in reality, they might be concurrent (only 1ms apart, within drift).
+
+NTP (Network Time Protocol) keeps clocks within ~1-10ms of each other.
+But 1-10ms of UNCERTAINTY remains. You can never be sure.
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ The fundamental problem:                                         │
+  │                                                                  │
+  │   "What time is it?"                                             │
+  │                                                                  │
+  │   On a single machine:  exact answer (read the clock)           │
+  │   In a distributed system: "somewhere between T-ε and T+ε"      │
+  │                             where ε = clock uncertainty           │
+  │                                                                  │
+  │   NTP:       ε ≈ 1-10 ms                                        │
+  │   TrueTime:  ε ≈ 1-7 ms (typically ~4ms)                       │
+  │   PTP:       ε ≈ 1-100 µs (hardware timestamps)                │
+  └─────────────────────────────────────────────────────────────────┘
+```
+
+### Google TrueTime (Spanner, 2012)
+
+```
+Google's insight: instead of pretending the clock is exact,
+EXPOSE THE UNCERTAINTY as an API.
+
+  Normal clock API:    now() → timestamp           "it's 14:00:00.005"
+  TrueTime API:        TT.now() → [earliest, latest]   "it's between 14:00:00.002 and 14:00:00.008"
+
+  TrueTime returns an INTERVAL, not a point:
+    TT.now() = { earliest: T - ε, latest: T + ε }
+
+  Where ε comes from:
+    GPS receivers + atomic clocks in every Google data center.
+    Between GPS syncs, quartz oscillator drifts at ~200 µs/sec.
+    After 30 seconds (sync interval): ε grows to ~6ms max.
+    After GPS sync: ε resets to ~1ms.
+    Average ε in practice: ~4ms.
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │ Google Data Center Clock Infrastructure:                      │
+  │                                                               │
+  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
+  │  │ Time Master │  │ Time Master │  │ Time Master │          │
+  │  │ (GPS rcvr)  │  │ (atomic clk)│  │ (GPS rcvr)  │          │
+  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘          │
+  │         │                 │                 │                 │
+  │         └─────────────────┼─────────────────┘                │
+  │                           │                                   │
+  │                    ┌──────▼──────┐                            │
+  │                    │  Servers     │                            │
+  │                    │  poll time   │                            │
+  │                    │  masters     │                            │
+  │                    │  every 30s   │                            │
+  │                    └─────────────┘                            │
+  │                                                               │
+  │  Mix of GPS + atomic clocks for redundancy.                  │
+  │  GPS can fail (jamming, antenna). Atomic clocks don't drift   │
+  │  but are expensive. Mix of both = always available.           │
+  └──────────────────────────────────────────────────────────────┘
+
+How Spanner uses TrueTime for SERIALIZABLE transactions:
+
+  1. Transaction T1 commits. Get TrueTime interval: [T1_earliest, T1_latest]
+  2. Assign commit timestamp: s1 = T1_latest (pick the LATEST possible time)
+  3. WAIT until TT.now().earliest > s1
+     → "commit wait" — deliberately pause until we're CERTAIN
+        that s1 is in the past for ALL servers.
+
+  Why wait?
+    If T2 starts after T1 committed, T2's timestamp must be > T1's.
+    By waiting ε ms, we GUARANTEE any future transaction will have
+    a higher timestamp — because their "earliest" > our "latest".
+
+    T1 commits at s1 = T1_latest
+    Wait until now.earliest > s1 (wait ~2ε ≈ 7ms)
+    → ANY future transaction ANYWHERE will see time > s1. Guaranteed.
+
+  This gives you EXTERNAL CONSISTENCY:
+    If T1 finishes before T2 starts (in real wall-clock time),
+    then T1's timestamp < T2's timestamp. Always.
+    Equivalent to linearizability — but across the globe!
+
+  The cost: every write transaction takes at least ~7ms (commit-wait).
+  This is why Spanner writes are ~10ms even within a single region.
+  For a globally-distributed SQL database, this is remarkably fast.
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ Why this is a big deal:                                          │
+  │                                                                  │
+  │ Before Spanner: you could have either:                           │
+  │   • Consistency (CP) — but only single-region, high latency     │
+  │   • Availability (AP) — multi-region, but eventually consistent  │
+  │                                                                  │
+  │ Spanner: BOTH. Globally distributed + externally consistent.    │
+  │ The "trick" is reducing ε (clock uncertainty) so small that     │
+  │ the commit-wait is acceptable (~7ms instead of ~100ms with NTP). │
+  │                                                                  │
+  │ Without TrueTime (using NTP, ε = 10ms):                         │
+  │   Commit-wait = ~20ms. Workable but slower.                     │
+  │                                                                  │
+  │ CockroachDB does exactly this — "Spanner without GPS clocks."   │
+  │ They use NTP, accept higher uncertainty, may need retries.       │
+  └─────────────────────────────────────────────────────────────────┘
+```
+
+### Hybrid Logical Clocks (HLC, 2014)
+
+```
+HLC = Lamport clock + physical timestamp, combined.
+Gets you causal ordering PLUS a close-to-wall-clock timestamp.
+No GPS/atomic clocks needed (works with NTP).
+
+  HLC value = (physical_time, logical_counter)
+
+  Rules:
+    1. On local event or send:
+       pt = max(local_clock, hlc.pt)
+       if pt == hlc.pt: hlc.lc += 1
+       else: hlc.lc = 0
+       hlc.pt = pt
+
+    2. On receive (msg has sender's HLC):
+       pt = max(local_clock, hlc.pt, msg.pt)
+       if pt == hlc.pt == msg.pt: hlc.lc = max(hlc.lc, msg.lc) + 1
+       elif pt == hlc.pt: hlc.lc += 1
+       elif pt == msg.pt: hlc.lc = msg.lc + 1
+       else: hlc.lc = 0
+       hlc.pt = pt
+
+  Properties:
+    • Causally consistent (like Lamport clocks)
+    • Physical component stays close to real wall-clock time
+    • Logical counter breaks ties when physical clocks are equal
+    • Bounded divergence: HLC.pt is at most ε ahead of real time
+    • Can use as a real timestamp for TTL, auditing, debugging
+
+  Example:
+    Node A at 14:00:00.100: HLC = (14:00:00.100, 0)
+    Node A sends message
+    Node B at 14:00:00.098 receives:
+      pt = max(14:00:00.098, 14:00:00.100) = 14:00:00.100
+      lc = msg.lc + 1 = 1
+      B's HLC = (14:00:00.100, 1)
+    Node B's HLC > Node A's HLC (correct causality!)
+    And it's still close to real time (14:00:00.100 vs actual ~14:00:00.098)
+
+Used by: CockroachDB, YugabyteDB, MongoDB (internal ordering)
+```
+
+### Clock Comparison
+
+```
+┌───────────────────┬──────────────┬───────────────────┬──────────────────┐
+│ Clock type        │ Ordering     │ Real time?        │ Used by          │
+├───────────────────┼──────────────┼───────────────────┼──────────────────┤
+│ Lamport Clock     │ Causal (one  │ No (just counter) │ Foundation for   │
+│                   │ direction)   │                   │ other clocks     │
+│ Vector Clock      │ Full causal  │ No                │ Dynamo, Riak     │
+│                   │ + concurrency│                   │                  │
+│ HLC               │ Full causal  │ Yes (approximate) │ CockroachDB,     │
+│                   │              │                   │ YugabyteDB       │
+│ TrueTime          │ External     │ Yes (bounded      │ Google Spanner   │
+│                   │ consistency  │ uncertainty)      │ (needs GPS/atomic│
+│                   │ (strongest)  │                   │ clocks)          │
+│ NTP timestamp     │ None         │ Yes (~1-10ms off) │ Logs, debugging  │
+│ (wall clock)      │ (unreliable) │                   │ (NOT for ordering│
+└───────────────────┴──────────────┴───────────────────┴──────────────────┘
+
+Key takeaway:
+  Wall clock alone: useless for ordering (clocks drift)
+  Lamport: ordering but no real time
+  Vector: ordering + conflict detection but no real time
+  HLC: ordering + approximate real time (good enough for most)
+  TrueTime: ordering + guaranteed real time (needs special hardware)
+```
+
 ## 7. CRDTs — Conflict-Free Replicated Data Types
 
 **File:** `src/crdt.rs`
@@ -460,6 +653,25 @@ Key structs:
 Used by: ZooKeeper (sequential znodes), etcd (revision numbers)
 NOT safely implemented by: Redis Redlock (no fencing)
 ```
+
+┌─────────────────────┬───────────┬──────────────┬─────────────┬────────────┐
+│ Method              │ Latency   │ Correctness  │ Complexity  │ Use when   │
+├─────────────────────┼───────────┼──────────────┼─────────────┼────────────┤
+│ Redis SET NX        │ ~1ms      │ Best-effort  │ Low         │ Dedup,     │
+│ (single node)       │           │ (can fail)   │             │ rate limit │
+│                     │           │              │             │            │
+│ Redlock             │ ~5ms      │ Debatable    │ Medium      │ Don't use  │
+│ (5 Redis nodes)     │           │ (controversial)│           │            │
+│                     │           │              │             │            │
+│ ZooKeeper / etcd    │ ~5-10ms   │ Strong       │ High        │ Critical   │
+│ (consensus-based)   │           │ (correct)    │ (run cluster)│ operations│
+│                     │           │              │             │            │
+│ Database            │ ~5-20ms   │ Strong       │ Low         │ Already    │
+│ (FOR UPDATE / adv.) │           │ (if same DB) │ (no new infra)│ have a DB │
+│                     │           │              │             │            │
+│ Kafka partition     │ ~10-50ms  │ Strong       │ Low         │ Event      │
+│ (single consumer)   │           │ (serial)     │ (if using Kafka)│ processing│
+└─────────────────────┴───────────┴──────────────┴─────────────┴────────────┘
 
 ## Quick Reference
 
