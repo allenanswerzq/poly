@@ -32,6 +32,7 @@
 //! │ DON'T use for    │ Security!          │ Hash tables (too slow)   │
 //! └──────────────────┴────────────────────┴──────────────────────────┘
 
+use blake3;
 use sha2::{Digest, Sha256};
 
 // =============================================================================
@@ -385,6 +386,44 @@ pub fn sha256_hex(data: &[u8]) -> String {
 pub fn sha256_u32(data: &[u8]) -> u32 {
     let hash = sha256(data);
     u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]])
+}
+
+// =============================================================================
+// BLAKE3 — 256-bit cryptographic hash
+// =============================================================================
+// Modern cryptographic hash (2020). Based on BLAKE2 and Bao tree structure.
+// Much faster than SHA-256 (~4-6x on x86_64 with SIMD) while being secure.
+// Produces 256-bit (32-byte) digest by default, but supports arbitrary length.
+// Features:
+//   - Parallelizable (Merkle tree internally)
+//   - Incremental (can stream data in)
+//   - Supports keyed hashing (MAC) and key derivation (KDF) natively
+//   - No length-extension attacks (unlike SHA-256)
+// Used in: IPFS, WireGuard, Bao (verified streaming)
+
+pub fn blake3_hash(data: &[u8]) -> [u8; 32] {
+    *blake3::hash(data).as_bytes()
+}
+
+pub fn blake3_hex(data: &[u8]) -> String {
+    blake3::hash(data).to_hex().to_string()
+}
+
+/// Truncate BLAKE3 to u32 for consistent hashing ring placement.
+pub fn blake3_u32(data: &[u8]) -> u32 {
+    let hash = blake3::hash(data);
+    let bytes = hash.as_bytes();
+    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+/// BLAKE3 keyed hash (MAC) — takes a 32-byte key.
+pub fn blake3_keyed(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
+    *blake3::keyed_hash(key, data).as_bytes()
+}
+
+/// BLAKE3 key derivation — derives a key from context string and input key material.
+pub fn blake3_derive_key(context: &str, key_material: &[u8]) -> [u8; 32] {
+    blake3::derive_key(context, key_material)
 }
 
 // =============================================================================

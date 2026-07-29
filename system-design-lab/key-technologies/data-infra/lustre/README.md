@@ -1,520 +1,930 @@
-# Distributed Filesystems — How Large-Scale Storage Works
+# Lustre — The HPC Parallel Filesystem
 
 ---
 
-## 1. The Problem
+## 1. What Lustre Is and Why It Exists
 
 ```
-A single disk or single server can't serve thousands of machines:
+Lustre is a POSIX-compliant parallel distributed filesystem designed
+for maximum throughput on large sequential I/O. Open-source (GPLv2).
 
-  Single NFS server:
-    Throughput: ~1-5 GB/s
-    Capacity: ~100 TB
-    Clients: ~50-100 before performance degrades
-    Single point of failure
+  Origins:
+    - Started at Carnegie Mellon University (1999, Peter Braam)
+    - Name: "Linux" + "Cluster"
+    - Funded by US Department of Energy for supercomputers
+    - Now maintained by DDN (DataDirect Networks) + open community
+    - Powers 60%+ of the world's top supercomputers
 
-  What large-scale workloads need:
-    ML training (16K GPUs):   100+ GB/s reads, 8 TB checkpoint writes
-    Data warehouse (Hadoop):  PB-scale storage, thousands of readers
-    HPC simulation:           millions of small files, low latency
-    Web serving (CDN origin): billions of objects, globally distributed
+  Used by:
+    - National labs: ORNL (Frontier), LLNL (El Capitan), ANL (Aurora)
+    - AI companies: Meta (LLaMA training), NVIDIA
+    - Cloud HPC: AWS FSx for Lustre, Azure Managed Lustre
+    - Any site needing 100s of GB/s aggregate throughput
 
-  The solution: spread data across hundreds of servers.
-  The challenge: make it look like ONE filesystem to the user.
+  Core design goal:
+    Make 1000s of disks across 100s of servers look like a single
+    POSIX filesystem. Any client can read/write any file.
+    Aggregate bandwidth scales linearly with server count.
+
+  What Lustre is NOT:
+    - Not an object store (it's POSIX: open/read/write/close)
+    - Not optimized for small files (designed for large I/O)
+    - Not a cloud-native system (designed for bare-metal HPC clusters)
 ```
 
 ---
 
-## 2. The Design Space
+## 2. Architecture
 
 ```
-All distributed filesystems make different tradeoffs on:
+┌─────────────────────────────────────────────────────────────────────┐
+│                         LUSTRE CLUSTER                               │
+│                                                                      │
+│  MGS (Management Server) — 1 server                                 │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │  Stores cluster configuration (which MDS, which OSS, etc.)    │ │
+│  │  Clients contact MGS first on mount to learn cluster topology.│ │
+│  │  Not in the data path. Contacted only on mount or config      │ │
+│  │  change. Can run on the same node as MDS.                     │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                      │
+│  MDS (Metadata Servers) — 1-4 servers (active-active with DNE)      │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │                                                                │ │
+│  │  MDS 0 ──── MDT 0                   MDS 1 ──── MDT 1         │ │
+│  │  (primary)  (metadata target)        (DNE)  (metadata target) │ │
+│  │                                                                │ │
+│  │  Each MDT is a local filesystem (ldiskfs or ZFS) on SSD.     │ │
+│  │                                                                │ │
+│  │  Stores:                                                       │ │
+│  │    - Inodes (file metadata: size, permissions, timestamps)    │ │
+│  │    - Directory entries (dentries: name → inode mapping)        │ │
+│  │    - File layout (which OSTs hold which stripes)              │ │
+│  │    - Extended attributes (xattrs)                              │ │
+│  │    - FID → inode mapping (FID = Lustre File IDentifier)       │ │
+│  │                                                                │ │
+│  │  NOT stored on MDS: actual file data (that's on OSTs)         │ │
+│  │                                                                │ │
+│  │  Backed by: ldiskfs (ext4 fork, faster) or ZFS (checksums)   │ │
+│  │  Runs on: fast SSDs, lots of RAM for inode cache              │ │
+│  │                                                                │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                      │
+│  OSSes + OSTs (Object Storage Servers + Targets) — 10s to 100s     │
+│  ┌──────────────┐  ┌──────────────┐      ┌──────────────┐         │
+│  │ OSS 0        │  │ OSS 1        │      │ OSS N        │         │
+│  │              │  │              │      │              │         │
+│  │ OST 0  OST 1│  │ OST 2  OST 3│      │ OST 2N OST.. │         │
+│  │ [disks]      │  │ [disks]      │      │ [disks]      │         │
+│  │              │  │              │      │              │         │
+│  │ Each OST =   │  │ Each OST =   │      │ Each OST =   │         │
+│  │ local fs     │  │ local fs     │      │ local fs     │         │
+│  │ (ldiskfs/ZFS)│  │ (ldiskfs/ZFS)│      │ (ldiskfs/ZFS)│         │
+│  │ on a RAID    │  │ on a RAID    │      │ on a RAID    │         │
+│  │ array or JBOD│  │ array or JBOD│      │ array or JBOD│         │
+│  │              │  │              │      │              │         │
+│  │ InfiniBand   │  │ InfiniBand   │      │ InfiniBand   │         │
+│  │ NIC          │  │ NIC          │      │ NIC          │         │
+│  └──────────────┘  └──────────────┘      └──────────────┘         │
+│                                                                      │
+│  CLIENTS — Linux kernel module on every compute/GPU node            │
+│  ┌──────────────┐  ┌──────────────┐      ┌──────────────┐         │
+│  │ Client 0     │  │ Client 1     │      │ Client M     │         │
+│  │              │  │              │      │              │         │
+│  │ mount -t     │  │ mount -t     │      │ mount -t     │         │
+│  │ lustre       │  │ lustre       │      │ lustre       │         │
+│  │ /mnt/lustre  │  │ /mnt/lustre  │      │ /mnt/lustre  │         │
+│  │              │  │              │      │              │         │
+│  │ Kernel module│  │ Kernel module│      │ Kernel module│         │
+│  │ (llite, lov, │  │              │      │              │         │
+│  │  osc, mdc,   │  │ torch.save() │      │ 8× GPUs      │         │
+│  │  lnet)       │  │ just works   │      │              │         │
+│  └──────────────┘  └──────────────┘      └──────────────┘         │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+
+Terminology:
+  MGS  = Management Server (cluster config, contacted on mount)
+  MDS  = Metadata Server (serves metadata from MDTs)
+  MDT  = Metadata Target (the actual disk/fs holding metadata)
+  OSS  = Object Storage Server (serves data from OSTs)
+  OST  = Object Storage Target (the actual disk/fs holding file data)
+  LNet = Lustre Networking (abstraction over InfiniBand, TCP, etc.)
+  FID  = File Identifier (128-bit unique ID for every file/dir)
+```
+
+---
+
+## 3. The Client Kernel Module — How Apps Talk to Lustre
+
+```
+Lustre's client is a LINUX KERNEL MODULE, not a FUSE driver.
+This is a critical design choice.
+
+  $ mount -t lustre mgs@o2ib:/testfs /mnt/lustre
+
+  After mounting, /mnt/lustre looks like a normal directory.
+  ls, cat, cp, dd, torch.save(), fopen() — all POSIX calls work.
+  The application has NO idea it's talking to a distributed filesystem.
+
+  Inside the kernel module, there are several layers:
 
   ┌──────────────────────────────────────────────────────────────┐
+  │  Application                                                 │
+  │    │                                                         │
+  │    │  POSIX syscall: read(fd, buf, 4MB)                     │
+  │    ▼                                                         │
+  │  VFS (Linux Virtual Filesystem Switch)                      │
+  │    │                                                         │
+  │    │  VFS dispatches to the Lustre filesystem driver         │
+  │    ▼                                                         │
+  │  llite (Lustre Lite — the VFS interface)                    │
+  │    │  Translates VFS ops → Lustre internal ops              │
+  │    │                                                         │
+  │    ├──► mdc (Metadata Client)                               │
+  │    │      Talks to MDS for: open, stat, readdir, unlink     │
+  │    │      Caches metadata locally (inode cache, dentry cache)│
+  │    │                                                         │
+  │    ├──► lov (Logical Object Volume)                         │
+  │    │      Handles STRIPING logic.                            │
+  │    │      Knows: "this file's bytes 0-1MB are on OST 3,    │
+  │    │              bytes 1-2MB are on OST 7, etc."           │
+  │    │      Splits/merges I/O across stripe targets.          │
+  │    │                                                         │
+  │    └──► osc (Object Storage Client) — one per OST          │
+  │           Sends read/write RPCs to the corresponding OSS.   │
+  │           Handles RPC batching, flow control, checksums.     │
+  │           Each osc manages a connection to one OST.          │
   │                                                              │
-  │  1. Interface: POSIX (like a normal filesystem) vs Object    │
-  │     POSIX: open/read/write/close, directories, permissions  │
-  │     Object: PUT/GET/DELETE by key (like S3)                 │
-  │                                                              │
-  │  2. Consistency: strong vs eventual                         │
-  │     Strong: read always sees latest write                   │
-  │     Eventual: reads may be stale for a moment              │
-  │                                                              │
-  │  3. Optimized for: large files vs small files               │
-  │     Large: striping across many servers (throughput)        │
-  │     Small: metadata-heavy, many lookups (latency)           │
-  │                                                              │
-  │  4. Metadata: centralized vs distributed                    │
-  │     Centralized: simple, but single bottleneck              │
-  │     Distributed: scales better, more complex                │
-  │                                                              │
-  └──────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 3. Architecture Patterns
-
-```
-Almost every distributed filesystem has the same three components:
-
-  ┌──────────────────────────────────────────────────────────────────┐
-  │                                                                  │
-  │  CLIENT (runs on every compute node)                            │
-  │  ┌────────────────────────────────────────────────────────────┐ │
-  │  │  Translates POSIX calls (open, read, write) into          │ │
-  │  │  network requests to the metadata + data servers.         │ │
-  │  │  Usually a kernel module or FUSE driver.                  │ │
-  │  │  Caches metadata and sometimes data locally.              │ │
-  │  └────────────────────────────────────────────────────────────┘ │
-  │       │                            │                             │
-  │       │ "where is file X?"         │ "give me bytes of file X"  │
-  │       ▼                            ▼                             │
-  │  METADATA SERVER                DATA SERVERS                    │
-  │  ┌──────────────────┐          ┌──────────────────────────────┐ │
-  │  │                  │          │                              │ │
-  │  │  Directory tree   │          │  Server 0: [chunk A, D, G] │ │
-  │  │  File → chunk map│          │  Server 1: [chunk B, E, H] │ │
-  │  │  Permissions      │          │  Server 2: [chunk C, F, I] │ │
-  │  │  File sizes       │          │  ...                       │ │
-  │  │  Lock state       │          │  Server N: [chunk ...]     │ │
-  │  │                  │          │                              │ │
-  │  └──────────────────┘          └──────────────────────────────┘ │
-  │                                                                  │
-  │  Metadata is SMALL (KB per file) → few servers, fast SSDs.     │
-  │  Data is LARGE (GB-TB per file) → many servers, big disks.     │
-  │                                                                  │
-  └──────────────────────────────────────────────────────────────────┘
-
-The read path:
-  1. Client: open("/data/model.bin")
-  2. Client → Metadata server: "where is model.bin?"
-  3. Metadata server → Client: "chunks are on servers [3, 7, 12, 19]"
-  4. Client → Data servers [3, 7, 12, 19]: "give me chunks" (PARALLEL)
-  5. Client reassembles chunks → returns data to application
-
-The write path:
-  1. Client: write(fd, data, size)
-  2. Client → Metadata server: "allocate space for new data"
-  3. Metadata server: "write to servers [5, 11, 22]" (picks based on load)
-  4. Client → Data servers [5, 11, 22]: "store these chunks" (PARALLEL)
-  5. Data servers ACK → Client → Metadata server: "update file size"
-```
-
----
-
-## 4. The Major Systems
-
-### 4.1 Lustre — HPC Parallel Filesystem
-
-```
-DESIGNED FOR: maximum throughput for large sequential I/O.
-USED BY:      Meta (LLaMA), NVIDIA, national labs, supercomputers.
-
-  ┌──────────────────────────────────────────────────────────────┐
-  │                                                              │
-  │  MDS (Metadata Server) — 1-4 servers                        │
-  │    Stores: directory tree, file-to-OST mapping              │
-  │    Backed by: ldiskfs or ZFS on fast SSDs                   │
-  │    Can shard directories across multiple MDTs (Lustre 2.4+) │
-  │                                                              │
-  │  OSS/OST (Object Storage Servers/Targets) — 100s of servers│
-  │    Each OSS manages 1-2 OSTs (disk arrays)                  │
-  │    Each OST = a local filesystem (ldiskfs/ZFS) on disks     │
-  │    Files are STRIPED across multiple OSTs                    │
-  │                                                              │
-  │  Client — kernel module (mount -t lustre)                   │
-  │    POSIX compatible: ls, cat, cp, torch.save all work       │
-  │    Talks to MDS for metadata, directly to OSSes for data    │
-  │    Network: InfiniBand RDMA (bypasses CPU on data path)     │
-  │                                                              │
-  └──────────────────────────────────────────────────────────────┘
-
-  File striping:
-    $ lfs setstripe -c 4 -S 1M myfile.bin
-    # -c 4: stripe across 4 OSTs
-    # -S 1M: each stripe is 1 MB
-
-    myfile.bin (10 MB):
-      OST 12: [0-1MB] [4-5MB] [8-9MB]
-      OST 37: [1-2MB] [5-6MB] [9-10MB]
-      OST 55: [2-3MB] [6-7MB]
-      OST 81: [3-4MB] [7-8MB]
-
-    4 OSTs read in parallel → 4× throughput.
-    Default stripe count: 1 (for small files).
-    For checkpoints: stripe across many OSTs.
-
-  Performance:
-    Single client:     ~5-20 GB/s (depends on stripe count and network)
-    Aggregate cluster: 100-2000+ GB/s (scales with number of OSSes)
-    Typical HPC:       200 OSSes × 10 GB/s each = 2 TB/s
-
-  Weaknesses:
-    - Metadata: single MDS was a bottleneck (fixed in newer versions
-      with Distributed Namespace / DNE)
-    - Small files: terrible performance (1 RPC per file open)
-    - Operational complexity: hard to manage, fragile
-```
-
-### 4.2 HDFS — Hadoop Distributed File System
-
-```
-DESIGNED FOR: batch analytics on commodity hardware.
-USED BY:      Hadoop ecosystem (MapReduce, Spark, Hive, Presto).
-
-  ┌──────────────────────────────────────────────────────────────┐
-  │                                                              │
-  │  NameNode (metadata) — 1 server (+ standby for HA)         │
-  │    Stores: entire directory tree + block locations IN RAM    │
-  │    Why RAM: fast lookups. 1B files ≈ 10 GB metadata.       │
-  │    Single point of failure → standby NameNode for failover. │
-  │                                                              │
-  │  DataNodes (data) — 100s to 1000s of servers               │
-  │    Each stores blocks (default 128 MB each)                 │
-  │    Each block replicated 3× across different racks          │
-  │    Heartbeat to NameNode every 3 seconds                    │
-  │                                                              │
-  │  Client — Java library (no kernel mount)                    │
-  │    NOT POSIX. Custom API: FileSystem.open(), .create()      │
-  │    Write-once: files are append-only after creation          │
-  │    No random writes. No in-place modification.              │
+  │  All network I/O goes through LNet:                         │
+  │  ┌──────────────────────────────────────────────────────┐   │
+  │  │  LNet (Lustre Networking)                            │   │
+  │  │    Abstracts transport: o2ib (IB verbs), tcp, etc.   │   │
+  │  │    Handles routing between networks.                  │   │
+  │  │    RDMA transfers for bulk data (zero-copy).         │   │
+  │  └──────────────────────────────────────────────────────┘   │
   │                                                              │
   └──────────────────────────────────────────────────────────────┘
 
-  Write path:
-    1. Client → NameNode: "create /data/file.parquet"
-    2. NameNode: "write block 1 to DataNodes [5, 23, 47]"
-    3. Client → DN5: sends block (128 MB)
-       DN5 → DN23: replicates (pipeline)
-       DN23 → DN47: replicates
-    4. All 3 DNs ACK → block is committed
-    5. Next block: NameNode picks different DataNodes
+  Why kernel module instead of FUSE:
+    + No context switches for each I/O (FUSE goes kernel→user→kernel)
+    + Direct page cache integration (Lustre pages = Linux page cache)
+    + RDMA zero-copy: data goes NIC → kernel buffer → app (no extra copy)
+    + Sub-microsecond VFS path (no FUSE daemon overhead)
 
-  Key design choices:
-    - Write-once, append-only: simplifies consistency
-    - 128 MB blocks: optimized for large sequential reads (analytics)
-    - 3× replication: simple, but 3× storage cost
-      (newer HDFS supports erasure coding: 1.5× cost, same durability)
-    - Rack-awareness: replicas on different racks for fault tolerance
-    - Data locality: Spark/MapReduce tries to compute on the node
-      where the data lives → no network transfer needed
-
-  Performance:
-    Single stream: ~100-200 MB/s (limited by 1 Gbps Ethernet era)
-    Aggregate: scales with DataNodes (100s of GB/s total)
-    Latency: ~10-50ms first byte (not for real-time)
-
-  Weaknesses:
-    - Small files: each file = 1 NameNode entry = ~150 bytes RAM.
-      1 billion small files → 150 GB RAM for NameNode alone.
-    - Not POSIX: can't mount as a directory. Special APIs needed.
-    - No random writes: can't update byte 500 of a file.
-    - JVM overhead: NameNode is Java → GC pauses at scale.
+    - Harder to develop and debug (kernel crashes = machine crashes)
+    - Must match kernel version (Lustre client tied to specific kernels)
+    - Harder to deploy (need to build/install kernel module)
 ```
 
-### 4.3 GFS (Google File System) — The Original
+---
+
+## 4. File Striping — How Data Is Spread Across OSTs
 
 ```
-DESIGNED FOR: Google's internal batch processing (original MapReduce).
-STATUS:       replaced by Colossus internally. But foundational design.
+Striping is Lustre's core mechanism for parallel I/O.
 
-  GFS (2003 paper) inspired HDFS. Same basic architecture:
-    Master (1) = NameNode.   Stores metadata.
-    Chunkservers (1000s) = DataNodes.  64 MB chunks, 3× replicated.
+  A file is divided into fixed-size STRIPES, round-robined across OSTs.
 
-  Key differences from HDFS:
-    - Append-optimized: primary use case was appending log data.
-    - Record-level appends: multiple clients can append concurrently
-      (GFS guarantees at-least-once atomic append).
-    - Relaxed consistency: different clients might see different
-      data for the same file region after concurrent writes.
-    - Single master: became the scaling bottleneck → led to Colossus.
+  $ lfs setstripe -c 4 -S 1M /mnt/lustre/myfile.bin
+    -c 4   = stripe count: use 4 OSTs
+    -S 1M  = stripe size: each stripe is 1 MB
 
-  Colossus (GFS2, ~2010):
-    - Distributed metadata (sharded across many servers).
-    - Uses Reed-Solomon erasure coding instead of 3× replication.
-    - Backs BigTable, Spanner, Gmail, YouTube, everything Google.
-    - Not publicly available. No paper published.
-```
-
-### 4.4 GPFS / Spectrum Scale (IBM)
-
-```
-DESIGNED FOR: enterprise HPC, large financial/research workloads.
-USED BY:      banks, national labs, some AI clusters.
-
-  Similar to Lustre in concept:
-    - Parallel data access across many servers
-    - POSIX compatible (mount as a filesystem)
-    - Striping across disks
-
-  Key differences from Lustre:
-    - DISTRIBUTED METADATA: no single metadata server bottleneck.
-      Metadata is spread across all nodes. Any node can serve
-      metadata for any file. Uses distributed locking (token-based).
-    - Better small-file performance (metadata not centralized).
-    - Commercial product (IBM support, but expensive).
-    - Cluster-wide byte-range locking (good for databases).
-
-  Performance: comparable to Lustre for large files.
-  Main advantage: more robust for mixed workloads (small + large files).
-```
-
-### 4.5 Ceph — Software-Defined Storage
-
-```
-DESIGNED FOR: unified storage (block + object + file) on commodity hw.
-USED BY:      OpenStack clouds, some K8s clusters, Red Hat customers.
+  Writing a 10 MB file with stripe_count=4, stripe_size=1M:
 
   ┌──────────────────────────────────────────────────────────────┐
   │                                                              │
-  │  Three interfaces, one storage backend:                     │
+  │  File offset:  [0  1  2  3  4  5  6  7  8  9] MB           │
   │                                                              │
-  │    CephFS    → POSIX filesystem (like Lustre)               │
-  │    RBD       → block device (like EBS)                      │
-  │    RGW       → object store (S3-compatible)                 │
+  │  OST 12:       [0]          [4]          [8]                │
+  │  OST 37:          [1]          [5]          [9]             │
+  │  OST 55:             [2]          [6]                       │
+  │  OST 81:                [3]          [7]                    │
   │                                                              │
-  │  All backed by RADOS (Reliable Autonomic Distributed Object │
-  │  Store):                                                     │
-  │                                                              │
-  │    OSDs (Object Storage Daemons) — one per disk             │
-  │    Monitors — consensus cluster (Paxos) for cluster state   │
-  │    NO centralized metadata server for data placement!       │
-  │                                                              │
-  │  CRUSH algorithm:                                           │
-  │    Instead of a metadata server tracking block locations,   │
-  │    Ceph uses a DETERMINISTIC HASH function:                 │
-  │      object_name → CRUSH(name, cluster_map) → OSD list     │
-  │    Any client can compute where data lives. No lookup.      │
-  │    When cluster changes (add/remove node), CRUSH             │
-  │    redistributes only the affected data.                     │
+  │  Round-robin: byte 0→OST12, byte 1M→OST37, byte 2M→OST55, │
+  │               byte 3M→OST81, byte 4M→OST12 (wraps), ...    │
   │                                                              │
   └──────────────────────────────────────────────────────────────┘
 
-  Key properties:
-    - No single metadata bottleneck (CRUSH computes placement)
-    - Self-healing: if an OSD dies, Ceph automatically re-replicates
-    - Runs on commodity hardware (no special HW needed)
-    - Strong consistency (all replicas written before ACK)
+  When reading this file:
+    lov layer splits read(0, 10MB) into 4 parallel sub-reads:
+      osc for OST 12: read stripes at offsets 0, 4, 8
+      osc for OST 37: read stripes at offsets 1, 5, 9
+      osc for OST 55: read stripes at offsets 2, 6
+      osc for OST 81: read stripes at offsets 3, 7
+    All 4 RPCs sent in PARALLEL over LNet.
+    lov reassembles the stripes into the correct order.
+    App sees a contiguous 10 MB buffer.
 
-  Weaknesses:
-    - Performance: slower than Lustre for large sequential I/O
-      (more software overhead, not optimized for InfiniBand RDMA)
-    - Complexity: harder to tune for peak throughput
-    - CephFS: less mature than Lustre for HPC workloads
+  Stripe count tradeoffs:
+    stripe_count=1 (default):
+      - Good for small files (no coordination overhead)
+      - Single OST throughput only (~2-5 GB/s)
+
+    stripe_count=4:
+      - Good for medium files (checkpoints, model weights)
+      - 4× single-OST throughput
+
+    stripe_count=-1 (stripe across ALL OSTs):
+      - Maximum throughput (every OST contributes)
+      - Good for: huge checkpoint files
+      - Bad for: wastes OST resources for small files
+      - Used by: Meta for LLaMA checkpoints
+
+  Stripe size tradeoffs:
+    Small (64K-256K):
+      - More parallelism for small reads
+      - More RPCs, higher overhead
+    Large (1M-4M):
+      - Fewer RPCs, lower overhead
+      - Less parallelism for reads smaller than stripe_size
+      - Default: 1 MB (good balance)
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Example: 100 GB checkpoint, 200 OSTs, stripe_count=-1     │
+  │                                                              │
+  │  Each OST holds: 100 GB / 200 = 500 MB                     │
+  │  Each OST @ 5 GB/s → per-OST read: 0.1 seconds            │
+  │  ALL OSTs read in parallel → 100 GB in 0.1 seconds         │
+  │  Aggregate: 200 × 5 GB/s = 1 TB/s                          │
+  │                                                              │
+  │  vs single OST: 100 GB / 5 GB/s = 20 seconds               │
+  │  Striping speedup: 200×                                     │
+  └──────────────────────────────────────────────────────────────┘
+
+  Progressive File Layout (PFL) — Lustre 2.10+:
+    Different stripe settings for different regions of a file.
+
+    $ lfs setstripe -E 1M -c 1 -E 1G -c 4 -E -1 -c -1 myfile
+      Bytes 0-1M:    stripe_count=1 (small, single OST)
+      Bytes 1M-1G:   stripe_count=4 (medium, 4 OSTs)
+      Bytes 1G+:     stripe_count=-1 (large, all OSTs)
+
+    Starts narrow, widens as file grows. Smart and automatic.
 ```
 
-### 4.6 WekaFS — Flash-Optimized Parallel FS
+---
+
+## 5. LNet — Lustre Networking
 
 ```
-DESIGNED FOR: AI/ML workloads on all-flash clusters.
-USED BY:      growing in AI training clusters (alternative to Lustre).
+LNet is Lustre's network abstraction layer.
+All communication (metadata + data) flows through LNet.
 
-  Key differentiators:
-    - NVMe-native: designed from scratch for flash, not spinning disks
-    - POSIX compatible (mount as regular filesystem)
-    - Distributed metadata (no single MDS bottleneck)
-    - GPU Direct Storage: data flows NVMe → GPU, bypassing CPU
-    - Tiering: hot data on NVMe, warm on SSD, cold on S3
+  Supported transports:
+    o2ib   — InfiniBand verbs (native RDMA, the fast path)
+    tcp    — TCP/IP sockets (fallback, much slower)
+    gni    — Cray Aries interconnect (Cray supercomputers)
+    kfi    — Kernel fabric interface (newer)
 
-  Why AI teams like it:
-    - Better small-file performance than Lustre (ML has many small files:
-      configs, tokenizers, scripts alongside large model files)
-    - Lower latency than Lustre for random reads
-    - Simpler operations than Lustre
+  LNet key concepts:
 
-  Weakness: commercial product, expensive licensing.
+  1. NID (Network IDentifier):
+     Format: IP@network_type  or  address@network_type
+     Example: 10.0.1.42@o2ib   (InfiniBand)
+              10.0.1.42@tcp    (TCP)
+
+  2. ROUTING:
+     LNet can route between different network types.
+     GPU nodes on InfiniBand → LNet router → storage on Ethernet
+     (though this is rare; most HPC sites use IB everywhere)
+
+  3. RDMA BULK TRANSFER:
+     For data I/O (not metadata), LNet uses RDMA:
+
+     ┌────────────────────────────────────────────────────────┐
+     │                                                        │
+     │  Client sends RPC to OSS:                             │
+     │    "I want to read 1 MB at offset X from OST 5"      │
+     │    RPC includes: RDMA descriptor (client buffer addr)  │
+     │                                                        │
+     │  OSS reads data from disk into its buffer.            │
+     │  OSS performs RDMA WRITE into client's memory buffer. │
+     │  Data bypasses client CPU — arrives directly in RAM.  │
+     │                                                        │
+     │  For writes: reverse direction.                        │
+     │  Client RDMA PUTs data into OSS buffer.               │
+     │  OSS writes to disk.                                  │
+     │                                                        │
+     │  "Bulk I/O" = RDMA. Only control messages use send/recv│
+     │                                                        │
+     └────────────────────────────────────────────────────────┘
+
+  4. MULTI-RAIL:
+     A single node can have multiple InfiniBand ports.
+     LNet stripes traffic across them for higher bandwidth.
+     Example: 2× HDR InfiniBand = 2×200 Gbps = 400 Gbps per client.
+
+  Performance over InfiniBand:
+    Per-client: 10-25 GB/s (depends on stripe count and IB generation)
+    HDR InfiniBand: 200 Gbps = 25 GB/s theoretical per port
+    NDR InfiniBand: 400 Gbps = 50 GB/s theoretical per port
+    Lustre overhead: ~10-20% below wire speed (RPCs, protocol, etc.)
 ```
 
-### 4.7 3FS (Fire-Flyer File System) — DeepSeek's Open-Source FS
+---
+
+## 6. Locking — How Concurrent Access Works
 
 ```
-DESIGNED FOR: AI training and inference on RDMA clusters.
-BUILT BY:     DeepSeek (2024-2025, open-sourced Feb 2025).
-USED BY:      DeepSeek internally for V3/R1 training.
+Multiple clients can read AND write the same file simultaneously.
+Lustre uses DISTRIBUTED LOCKS to maintain POSIX consistency.
 
-  3FS was built because existing filesystems (Lustre, GPFS)
-  weren't optimized for DeepSeek's specific workload:
-    - AI training: huge sequential reads + checkpoint writes
-    - AI inference: random reads for KV cache / model shards
-    - Hardware: RDMA networking + NVMe SSDs everywhere
+  The lock manager is called LDLM (Lustre Distributed Lock Manager).
+  Locks are managed by the MDS (for metadata) and OSSes (for data).
+
+  Lock types:
+    - CR (Concurrent Read): multiple readers, no writers
+    - CW (Concurrent Write): multiple writers (each to different regions)
+    - PR (Protected Read): exclusive read (for read-your-own-writes)
+    - PW (Protected Write): exclusive write to a byte range
+    - EX (Exclusive): full exclusive access
+
+  How byte-range locking works:
 
   ┌──────────────────────────────────────────────────────────────┐
   │                                                              │
-  │  Architecture:                                              │
+  │  Client A: write(fd, buf, 1MB) at offset 0                 │
+  │    1. osc requests PW lock on [0, 1MB) from OST             │
+  │    2. OST grants PW lock (no conflict)                      │
+  │    3. Client A writes 1 MB                                  │
   │                                                              │
-  │  Metadata cluster (3 nodes, Raft consensus)                 │
-  │    - File/directory metadata                                │
-  │    - Strong consistency via Raft                            │
-  │    - Handles: create, open, stat, readdir                  │
+  │  Client B: write(fd, buf, 1MB) at offset 4MB               │
+  │    1. osc requests PW lock on [4MB, 5MB) from OST           │
+  │    2. OST grants PW lock (no conflict — different range)    │
+  │    3. Client B writes 1 MB in parallel with Client A        │
   │                                                              │
-  │  Storage nodes (100s of nodes)                              │
-  │    - Each manages local NVMe SSDs                          │
-  │    - Data stored in chunks (configurable size)              │
-  │    - RDMA for data transfers (no CPU involvement)          │
-  │    - Chain replication for writes (strong consistency)      │
-  │                                                              │
-  │  FUSE client (on every compute node)                       │
-  │    - Mounts as regular filesystem (POSIX)                  │
-  │    - Userspace client (FUSE, not kernel module)            │
-  │    - RDMA reads directly from storage nodes                │
-  │    - Client-side striping and parallel reads               │
+  │  Client C: write(fd, buf, 1MB) at offset 0                 │
+  │    1. osc requests PW lock on [0, 1MB) from OST             │
+  │    2. CONFLICT with Client A's lock                         │
+  │    3. OST sends AST (Asynchronous Blocking Callback) to A  │
+  │    4. Client A flushes dirty data, releases lock            │
+  │    5. OST grants lock to Client C                           │
+  │    6. Client C writes its 1 MB                              │
   │                                                              │
   └──────────────────────────────────────────────────────────────┘
 
-  Key design decisions:
+  Lock CALLBACKS (the key mechanism):
 
-    1. CHAIN REPLICATION (not Raft per chunk)
-       Write path: Client → Node A → Node B → Node C → ACK
-       Read path: always from tail (Node C) — guaranteed latest.
-       Simpler than Raft for data replication.
-       Strong consistency without voting overhead per write.
+    When a lock conflicts, the server doesn't just deny.
+    It sends a BLOCKING AST (callback) to the current holder:
+      "Someone else wants this range. Flush your data and release."
 
-    2. CRAQ (Chain Replication with Apportioned Queries)
-       Reads can go to ANY node in the chain (not just tail).
-       If the node has the latest version → respond immediately.
-       If stale → forward to tail to confirm.
-       This spreads read load across all replicas.
+    This is why Lustre can maintain POSIX semantics across 1000s
+    of clients without each client checking locks continuously.
 
-    3. RDMA-NATIVE from the ground up
-       All data path operations use RDMA (one-sided reads).
-       Client can read from storage node's memory WITHOUT the
-       storage node's CPU being involved.
-       Result: very low latency, very high throughput.
+  Metadata locks (managed by MDS):
 
-    4. FLAT DATA CHUNK DESIGN
-       No complex striping schemes like Lustre.
-       Files are split into fixed-size chunks.
-       Metadata server maps: (file, offset) → (chain, chunk_id).
-       Simple, predictable, easy to reason about.
+    When you open a file, the MDS grants a metadata lock.
+    If another client modifies the file (e.g., chmod, rename),
+    the MDS revokes conflicting metadata locks via callbacks.
 
-  Performance (from DeepSeek's paper/repo):
-    Read throughput:   ~6.2 TB/s aggregate across 180 storage nodes
-    Write throughput:  ~3 TB/s aggregate
-    Single client:     saturates RDMA bandwidth (~100 Gbps)
-    Latency:           sub-millisecond for small reads
+    Common bottleneck: single directory with thousands of creates:
+      Each create needs an exclusive lock on the parent directory.
+      Serialized. This is why Lustre is bad at "many small files."
 
-  Why DeepSeek built it instead of using Lustre:
-    - Lustre MDS is a bottleneck for their scale of metadata ops
-    - Lustre's kernel client is harder to customize than FUSE
-    - They wanted RDMA-native data path (Lustre's RDMA support
-      exists but isn't as tightly integrated)
-    - Chain replication gives simpler consistency model
-    - Open-source: full control, no vendor dependency
+  Lock CANCELLATION for ML workloads:
 
-  Open-source: github.com/deepseek-ai/3FS (Apache 2.0)
+    ML training typically has this pattern:
+      N workers read the same large files (training data).
+      → All get CR locks. No conflict. Fast.
+
+    Checkpoint writing:
+      Each worker writes a DIFFERENT file (rank-specific checkpoint).
+      → No lock conflicts at all. Fast.
+
+    Worst case for Lustre:
+      Many processes creating files in the same directory.
+      Or many processes appending to the same file.
+      → Heavy lock contention. Slow.
 ```
 
 ---
 
-## 5. Comparison Table
+## 7. Metadata Operations — The MDS Deep Dive
 
 ```
-┌──────────────┬──────────┬──────────┬────────────┬──────────┬──────────┬──────────┐
-│              │ Lustre   │ HDFS     │ GPFS       │ Ceph     │ WekaFS   │ 3FS      │
-├──────────────┼──────────┼──────────┼────────────┼──────────┼──────────┼──────────┤
-│ Interface    │ POSIX    │ Custom   │ POSIX      │ POSIX/   │ POSIX    │ POSIX    │
-│              │          │ Java API │            │ S3/Block │          │ (FUSE)   │
-├──────────────┼──────────┼──────────┼────────────┼──────────┼──────────┼──────────┤
-│ Metadata     │ Central  │ Central  │ Distributed│ CRUSH    │ Distrib. │ Raft     │
-│              │ (MDS)    │(NameNode)│ (all nodes)│ (no MDS) │          │ (3-node) │
-├──────────────┼──────────┼──────────┼────────────┼──────────┼──────────┼──────────┤
-│ Replication  │ RAID /   │ 3× rep   │ Rep / EC   │ 3× rep   │ EC       │ Chain    │
-│              │ rep      │ or EC    │            │ or EC    │          │ rep (3×) │
-├──────────────┼──────────┼──────────┼────────────┼──────────┼──────────┼──────────┤
-│ Large file   │ Excellent│ Good     │ Excellent  │ Good     │ V. good  │ Excellent│
-│ throughput   │          │          │            │          │          │          │
-├──────────────┼──────────┼──────────┼────────────┼──────────┼──────────┼──────────┤
-│ Small files  │ Poor     │ Poor     │ Better     │ OK       │ Good     │ OK       │
-├──────────────┼──────────┼──────────┼────────────┼──────────┼──────────┼──────────┤
-│ Random R/W   │ OK       │ None     │ Good       │ OK       │ Good     │ Good     │
-│              │          │(append)  │            │          │          │ (RDMA)   │
-├──────────────┼──────────┼──────────┼────────────┼──────────┼──────────┼──────────┤
-│ Network      │ IB/RDMA  │ TCP      │ IB/RDMA   │ TCP/RDMA │ IB/RDMA  │ RDMA     │
-│              │          │          │            │          │          │ native   │
-├──────────────┼──────────┼──────────┼────────────┼──────────┼──────────┼──────────┤
-│ Scale        │ PB-EB    │ PB-EB    │ PB-EB     │ PB-EB    │ PB       │ PB       │
-├──────────────┼──────────┼──────────┼────────────┼──────────┼──────────┼──────────┤
-│ Best for     │ HPC, ML  │ Hadoop   │ Enterprise │ Cloud    │ ML (flash│ ML (RDMA │
-│              │ training │ analytics│ HPC        │ storage  │ clusters)│ clusters)│
-├──────────────┼──────────┼──────────┼────────────┼──────────┼──────────┼──────────┤
-│ License      │ Open src │ Open src │ Commercial │ Open src │ Commerc. │ Open src │
-└──────────────┴──────────┴──────────┴────────────┴──────────┴──────────┴──────────┘
+The MDS is Lustre's most critical (and historically most fragile)
+component.
+
+  What the MDS does:
+    open()    → look up inode, return file layout (stripe info)
+    stat()    → return inode attributes (size, mtime, permissions)
+    readdir() → list directory entries
+    create()  → allocate inode + assign OSTs for striping
+    unlink()  → remove file, free space on OSTs
+    rename()  → atomically move a dentry
+
+  How MDS stores metadata:
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │                                                              │
+  │  MDT (Metadata Target) — a local filesystem on SSD          │
+  │                                                              │
+  │  ldiskfs (default):                                         │
+  │    Fork of ext4 optimized for Lustre.                       │
+  │    Changes: larger inodes (for storing stripe layout in     │
+  │    inode xattrs), journal tweaks, bulk orphan cleanup.      │
+  │    Performance: ~100K-300K metadata ops/sec per MDS.        │
+  │                                                              │
+  │  ZFS (alternative):                                         │
+  │    Checksums every block (detects silent corruption).       │
+  │    Snapshots (cheap metadata snapshots).                    │
+  │    Slower than ldiskfs (~60-70% of ldiskfs performance).    │
+  │    Chosen when data integrity is paramount.                 │
+  │                                                              │
+  │  Layout stored in inode xattr:                              │
+  │    struct lov_mds_md {                                      │
+  │      stripe_count: 4,                                       │
+  │      stripe_size: 1048576,  // 1 MB                        │
+  │      objects: [                                             │
+  │        { ost_idx: 12, object_id: 0x1a3f },                 │
+  │        { ost_idx: 37, object_id: 0x2b4e },                 │
+  │        { ost_idx: 55, object_id: 0x3c5d },                 │
+  │        { ost_idx: 81, object_id: 0x4d6c },                 │
+  │      ]                                                      │
+  │    }                                                        │
+  │    Stored directly in the inode extended attribute.          │
+  │    No separate lookup needed. open() returns this layout.   │
+  │                                                              │
+  └──────────────────────────────────────────────────────────────┘
+
+  DNE (Distributed Namespace) — Lustre 2.4+:
+
+    Problem: single MDS limits metadata throughput.
+    Solution: shard the directory tree across multiple MDTs.
+
+    Two modes:
+
+    1. Remote directories (DNE1):
+       /mnt/lustre/user_A/  → MDT 0
+       /mnt/lustre/user_B/  → MDT 1
+       Manually assigned. Different subtrees on different MDTs.
+
+    2. Striped directories (DNE2, Lustre 2.8+):
+       A single directory's entries are hashed across multiple MDTs.
+       /mnt/lustre/checkpoints/ striped across MDT 0, 1, 2, 3.
+       create("file_rank_42") → hash("file_rank_42") → MDT 2.
+       Parallel creates in the same directory!
+
+    ┌────────────────────────────────────────────────────────┐
+    │  /checkpoints/ striped across 4 MDTs:                 │
+    │                                                        │
+    │  MDT 0: file_rank_0, file_rank_4, file_rank_8, ...   │
+    │  MDT 1: file_rank_1, file_rank_5, file_rank_9, ...   │
+    │  MDT 2: file_rank_2, file_rank_6, file_rank_10, ...  │
+    │  MDT 3: file_rank_3, file_rank_7, file_rank_11, ...  │
+    │                                                        │
+    │  4 MDTs handle creates in parallel → 4× metadata speed │
+    └────────────────────────────────────────────────────────┘
+
+  MDS performance (single MDS, ldiskfs):
+    stat():     ~300K ops/sec
+    create():   ~50K-100K ops/sec
+    readdir():  depends on directory size
+    Bottleneck: journal commit (fsync per metadata transaction)
 ```
 
 ---
 
-## 6. Object Storage vs Filesystem — Why Both Exist
+## 8. Read and Write Paths — Step by Step
 
 ```
-Object stores (S3, GCS, Azure Blob) are NOT filesystems:
+READ PATH — reading 4 MB from a striped file:
 
-  ┌─────────────────────┬──────────────────────────────────────┐
-  │ Filesystem (POSIX)  │ Object Store (S3-like)               │
-  ├─────────────────────┼──────────────────────────────────────┤
-  │ Hierarchical dirs   │ Flat key-value namespace             │
-  │ open/read/write/    │ PUT/GET/DELETE by key                │
-  │ seek/close          │                                      │
-  │ Random byte access  │ Read/write whole objects only        │
-  │ Mutable files       │ Immutable (replace whole object)     │
-  │ Locks, permissions  │ IAM policies, ACLs                   │
-  │ Low latency (<1ms)  │ Higher latency (~50-100ms)           │
-  │ Limited scale       │ Unlimited scale                      │
-  │ Complex to operate  │ Fully managed (cloud)                │
-  └─────────────────────┴──────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────┐
+  │                                                              │
+  │  1. App: read(fd, buf, 4MB) at offset 0                    │
+  │     ↓                                                        │
+  │  2. VFS → llite: already has file layout from open()        │
+  │     Layout: stripe_count=4, stripe_size=1M,                 │
+  │             OSTs = [12, 37, 55, 81]                         │
+  │     ↓                                                        │
+  │  3. lov splits the read:                                    │
+  │       osc_12: read 1 MB at offset 0                         │
+  │       osc_37: read 1 MB at offset 0                         │
+  │       osc_55: read 1 MB at offset 0                         │
+  │       osc_81: read 1 MB at offset 0                         │
+  │     ↓                                                        │
+  │  4. Each osc checks: do I have a lock on this range?        │
+  │     If cached data + valid lock → serve from page cache.    │
+  │     If no lock/data → send RPC to OSS.                      │
+  │     ↓                                                        │
+  │  5. Each osc sends bulk read RPC to its OSS over LNet:     │
+  │     RPC includes: object_id, offset, length, RDMA desc     │
+  │     ↓                                                        │
+  │  6. Each OSS reads from local disk (ldiskfs/ZFS on the OST)│
+  │     OSS RDMA-writes data directly into client's memory.     │
+  │     ↓                                                        │
+  │  7. All 4 RPCs complete. lov merges pages into correct order│
+  │     ↓                                                        │
+  │  8. VFS copies data to user buffer. read() returns 4 MB.   │
+  │                                                              │
+  │  Total latency: ~1 network RTT + disk read time             │
+  │  (all 4 OSTs read in parallel, so latency ≈ single-OST)    │
+  │  Throughput: 4 × single-OST bandwidth                       │
+  │                                                              │
+  └──────────────────────────────────────────────────────────────┘
 
-  ML training uses BOTH:
-    Lustre/GPFS: hot path — training data reads, checkpoint writes.
-      Needs: low latency, high throughput, POSIX (torch.save just works).
 
-    S3/GCS: cold storage — raw datasets, final model artifacts, backups.
-      Needs: cheap, unlimited capacity, no ops overhead.
+WRITE PATH — writing 4 MB to a striped file:
 
-    Typical flow:
-      Raw data on S3 → copy to Lustre → train → checkpoint to Lustre
-      → final model to S3 → serve from S3 or model registry.
+  ┌──────────────────────────────────────────────────────────────┐
+  │                                                              │
+  │  1. App: write(fd, buf, 4MB) at offset 0                   │
+  │     ↓                                                        │
+  │  2. VFS → llite → lov splits into 4 stripes (same as read) │
+  │     ↓                                                        │
+  │  3. Each osc acquires PW lock on its byte range from OST.  │
+  │     (If already held from previous write → skip)            │
+  │     ↓                                                        │
+  │  4. Data goes into CLIENT PAGE CACHE (dirty pages).         │
+  │     write() returns immediately (async by default).          │
+  │                                                              │
+  │     The data is NOT yet on disk on the OST.                 │
+  │     It's in the client's page cache, marked dirty.          │
+  │     ↓                                                        │
+  │  5. Background writeback flushes dirty pages to OSTs:       │
+  │     Each osc collects dirty pages for its OST.             │
+  │     Sends bulk write RPC (client RDMA read by OSS).        │
+  │     ↓                                                        │
+  │  6. OSS writes to local disk. ACKs the RPC.                │
+  │     Client marks pages clean.                                │
+  │     ↓                                                        │
+  │  7. For fsync()/O_SYNC: write waits for OSS ACK before     │
+  │     returning. Data on disk. Durable.                        │
+  │                                                              │
+  │  IMPORTANT: default write is ASYNC.                         │
+  │    Data is in client cache. If client crashes before flush,  │
+  │    data is LOST. This is the same as local ext4 behavior.   │
+  │    For checkpoints: always fsync() or O_SYNC.               │
+  │                                                              │
+  └──────────────────────────────────────────────────────────────┘
+
+
+WRITE REPLICATION — NOT like 3FS
+
+  Lustre does NOT replicate data across OSTs by default.
+  Each stripe lives on exactly ONE OST.
+  Durability comes from the OST's local RAID array.
+
+  ┌────────────────────────────────────────────────────────────┐
+  │                                                            │
+  │  3FS:    Client → Head → Middle → Tail (3× replication)  │
+  │  Lustre: Client → OST (single copy on RAID array)        │
+  │                                                            │
+  │  If an OST dies:                                          │
+  │    3FS: data still available on other chain nodes          │
+  │    Lustre: data is LOST unless the OST's RAID recovers    │
+  │                                                            │
+  │  Lustre's assumption:                                      │
+  │    Each OST is a RAID-6 array (can lose 2 disks).         │
+  │    Server has redundant power, ECC RAM, etc.              │
+  │    The RAID protects against disk failure.                 │
+  │    But if the entire OSS/node dies → data unavailable.    │
+  │                                                            │
+  │  Mitigations:                                              │
+  │    - OST mirroring (Lustre 2.11+): file-level mirroring   │
+  │      across 2-3 OSTs (like RAID-1 at file level)          │
+  │    - Backup to object store (Lustre HSM)                  │
+  │    - Application-level: checkpoint to 2+ Lustre clusters  │
+  │                                                            │
+  └────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 7. Key Concepts
+## 9. The Page Cache and Read-Ahead
 
 ```
-STRIPING:
-  Split a file into chunks, spread across multiple servers.
-  More servers reading simultaneously = more bandwidth.
-  Lustre, GPFS, Ceph all do this.
+Lustre leverages the Linux page cache heavily.
 
-REPLICATION:
-  Store 3 copies of each chunk on different servers.
-  Simple, fast reads (read from any copy), but 3× storage cost.
-  HDFS default, Ceph default.
+  Read-ahead:
+    When client reads sequentially, Lustre detects the pattern.
+    Client pre-fetches upcoming stripes before the app asks.
+    Read-ahead window grows as sequential pattern continues.
 
-ERASURE CODING:
-  Like RAID 6 across servers. Store N data + M parity chunks.
-  Can lose M servers and recover. Only ~1.5× storage cost.
-  Used by: S3, newer HDFS, Ceph, Colossus.
+    ┌────────────────────────────────────────────────────────┐
+    │  App reads: [0-1MB]                                    │
+    │  Lustre pre-fetches: [1-5MB] (read-ahead window = 4MB)│
+    │                                                        │
+    │  App reads: [1-2MB]  → served from cache! Zero latency│
+    │  Lustre pre-fetches: [5-13MB] (window grows to 8MB)   │
+    │                                                        │
+    │  App reads: [2-3MB]  → served from cache!              │
+    │  Lustre pre-fetches: [13-29MB] (window grows to 16MB) │
+    │                                                        │
+    │  Max read-ahead window: configurable (default ~40 MB)  │
+    │  Per-file. Per-client. Scales with stripe count.       │
+    └────────────────────────────────────────────────────────┘
 
-DATA LOCALITY:
-  Move compute to where the data is, not data to compute.
-  Hadoop's key insight: schedule MapReduce task on the DataNode
-  that holds the data → zero network transfer.
-  Less relevant for GPU training (data must go to GPU regardless).
+  Write-behind:
+    Writes go to page cache (dirty pages).
+    Background threads flush to OSTs when:
+      - Dirty ratio exceeds threshold
+      - Periodic timer fires
+      - fsync() is called
+      - Lock is revoked (another client wants the range)
 
-RACK AWARENESS:
-  Place replicas on different racks so a rack power failure
-  doesn't lose all copies. HDFS, Ceph, Lustre all support this.
+  Page cache coherence:
+    Lustre uses LOCKS to maintain cache coherence.
+    When Client A holds a read lock + cached data, and Client B
+    writes the same range:
+      1. OST sends blocking AST to Client A
+      2. Client A invalidates cached pages for that range
+      3. Client A releases its lock
+      4. Client B's write proceeds
+      5. Next time Client A reads → cache miss → fresh data from OST
 
-METADATA SCALABILITY:
-  The #1 bottleneck in most distributed filesystems.
-  Single metadata server: simple but limits file count.
-  Solutions: shard metadata (GPFS, Ceph CRUSH, Colossus).
+    This is expensive but guarantees POSIX semantics.
+    In practice, ML workloads rarely have true file-level conflicts.
+```
 
-CACHE COHERENCE:
-  When multiple clients modify the same file simultaneously:
-    Lustre: byte-range locking (client acquires lock before write)
-    GPFS: token-based distributed locking
-    HDFS: doesn't support concurrent writes (append-only)
-    Ceph: MDS-coordinated locks for CephFS
+---
+
+## 10. Failure Handling
+
+```
+OSS/OST failure:
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │                                                              │
+  │  OSS 5 (hosting OST 10, OST 11) crashes.                   │
+  │                                                              │
+  │  Immediate effect:                                          │
+  │    - Any file with stripes on OST 10 or 11 is partially    │
+  │      unavailable. I/O to those stripes blocks (hangs).      │
+  │    - I/O to stripes on OTHER OSTs continues fine.           │
+  │    - Entire files with stripe_count=1 on OST 10/11 → stuck.│
+  │                                                              │
+  │  Recovery:                                                  │
+  │    1. OSS comes back up.                                    │
+  │    2. OSTs replay their journals (ldiskfs/ZFS journal).     │
+  │    3. Clients reconnect and replay uncommitted RPCs.        │
+  │    4. I/O resumes. Automatic.                               │
+  │                                                              │
+  │  If OSS is permanently dead:                                │
+  │    - Admin must replace hardware, restore OST from backup.  │
+  │    - Files with stripes on dead OST are degraded until      │
+  │      OST is restored or file is re-striped.                 │
+  │    - No automatic re-replication (unlike 3FS or Ceph).      │
+  │                                                              │
+  │  This is Lustre's biggest operational weakness.             │
+  │  Hardware failure = manual intervention.                     │
+  │  (Contrast: 3FS automatically re-replicates lost chunks.)  │
+  │                                                              │
+  └──────────────────────────────────────────────────────────────┘
+
+
+MDS failure:
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │                                                              │
+  │  MDS crashes.                                               │
+  │                                                              │
+  │  Immediate effect:                                          │
+  │    - No new file opens, creates, stats, readdir.            │
+  │    - In-flight reads/writes that already have file layout   │
+  │      and locks can CONTINUE (data path is OSS-direct).      │
+  │    - But any operation needing metadata → hangs.            │
+  │                                                              │
+  │  Recovery:                                                  │
+  │    1. MDS comes back up (or standby MDS takes over via HA). │
+  │    2. MDT journal is replayed.                               │
+  │    3. Clients re-establish connections, replay uncommitted   │
+  │       metadata operations.                                   │
+  │    4. Service resumes.                                       │
+  │                                                              │
+  │  HA setup (recommended):                                    │
+  │    Active-passive MDS pair. Shared storage for MDT.         │
+  │    If active dies → passive takes over the MDT.             │
+  │    Failover time: ~30 seconds to 2 minutes (slow!).        │
+  │    Clients see a pause but no data loss.                    │
+  │                                                              │
+  │  This is worse than 3FS's Raft:                             │
+  │    3FS: ~1 second failover (Raft elects new leader).       │
+  │    Lustre: 30-120 seconds (active-passive takeover).        │
+  │                                                              │
+  └──────────────────────────────────────────────────────────────┘
+
+
+Client failure:
+
+  A client crash is relatively harmless to the cluster.
+  - The MDS and OSSes detect the dead client (timeout).
+  - Locks held by the dead client are revoked.
+  - Dirty pages in the dead client's cache are lost (unless fsync'd).
+  - Other clients are unaffected.
+```
+
+---
+
+## 11. Lustre HSM (Hierarchical Storage Management)
+
+```
+HSM lets Lustre tier data to cheaper storage (tape, S3, etc.).
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │                                                              │
+  │  Hot tier:  Lustre OSTs (NVMe/SSD, fast, expensive)        │
+  │  Cold tier: Tape / S3 / cheaper disks (slow, cheap)        │
+  │                                                              │
+  │  Operations:                                                │
+  │    ARCHIVE: copy file from Lustre to cold tier              │
+  │    RELEASE: free OST space (file appears as stub on MDS)    │
+  │    RESTORE: copy file back from cold tier to Lustre         │
+  │                                                              │
+  │  When a released file is read:                              │
+  │    1. Client open() → MDS sees file is "released"           │
+  │    2. MDS triggers RESTORE from archive                     │
+  │    3. Client blocks until file is restored                   │
+  │    4. read() proceeds normally                               │
+  │                                                              │
+  │  Use case:                                                  │
+  │    Training data that's only needed for specific runs.      │
+  │    Archive after training. Release space.                    │
+  │    Re-stage before next training run.                        │
+  │                                                              │
+  └──────────────────────────────────────────────────────────────┘
+
+  AWS FSx for Lustre uses this:
+    S3 bucket as the archive tier.
+    Data lazily loads from S3 into Lustre on first read.
+    Training completes → data evicted → S3 remains.
+```
+
+---
+
+## 12. Use Cases in ML Training
+
+```
+1. TRAINING DATA STORAGE
+   Pre-tokenized data shards stored as large binary files.
+   Each data-parallel worker reads a different shard (or offset).
+   Stripe across many OSTs for maximum read throughput.
+   Sequential reads → Lustre read-ahead maximizes bandwidth.
+
+   $ lfs setstripe -c -1 -S 4M /mnt/lustre/training_data/
+   # Every file striped across all OSTs, 4 MB stripe size.
+
+2. CHECKPOINT WRITES
+   Every N steps: each rank writes its model shard.
+   Write to rank-specific files → no lock contention.
+   Critical: use fsync() to ensure durability.
+
+   $ lfs setstripe -c 8 -S 1M /mnt/lustre/checkpoints/
+   # 8 OSTs per file. All ranks write in parallel.
+   # 1000 ranks × 8 OSTs each = saturate the cluster.
+
+3. MODEL WEIGHTS (load at startup)
+   Model weights stored as a few large files.
+   All ranks read the same files simultaneously.
+   Lustre's page cache on OSSes helps (read once from disk,
+   serve many clients from memory).
+
+4. SHARED CONFIG / SMALL FILES
+   tokenizer.json, config.yaml, scripts.
+   Lustre is BAD at this. Metadata ops are slow.
+   Workaround: copy small files to local /tmp at job start.
+   Or use a single tarball that each node extracts locally.
+
+Typical ML cluster Lustre config:
+  - 50-200 OSSes, each with 2-4 NVMe OSTs
+  - 1-2 MDSes (with DNE for checkpoint directories)
+  - InfiniBand HDR/NDR
+  - Per-client throughput: 10-25 GB/s
+  - Aggregate: 500 GB/s - 2 TB/s
+```
+
+---
+
+## 13. Operational Pain Points
+
+```
+Lustre is powerful but operationally demanding:
+
+  1. KERNEL MODULE DEPENDENCY
+     Lustre client must match the kernel version.
+     Kernel upgrade → must rebuild Lustre client.
+     DKMS helps but doesn't always work.
+     Containers: must mount Lustre on the host, bind-mount in.
+
+  2. OST IMBALANCE
+     Some OSTs fill up faster than others.
+     New file creates pick OSTs by available space (weighted random).
+     But old files don't rebalance. Manual "lfs migrate" needed.
+
+  3. METADATA BOTTLENECK (pre-DNE)
+     Single MDS: ls on a directory with 1M files = slow.
+     fix: DNE striped directories. But requires planning.
+
+  4. NO AUTOMATIC RE-REPLICATION
+     OST dies → admin must fix hardware.
+     No self-healing like Ceph or 3FS.
+     Must maintain RAID arrays carefully.
+
+  5. DEBUGGING IS HARD
+     Kernel module crashes → node reboots.
+     Lustre has its own debug log (/proc/sys/lnet/debug).
+     Error messages are cryptic.
+     Requires specialized Lustre admin knowledge.
+
+  6. QUOTA MANAGEMENT
+     Lustre supports user/group/project quotas.
+     But quota enforcement is distributed (MDS + OSSes must agree).
+     Quota can become slightly inaccurate under heavy load.
+```
+
+---
+
+## 14. Lustre vs 3FS — Detailed Comparison
+
+```
+┌──────────────────────┬──────────────────┬──────────────────────┐
+│                      │ Lustre           │ 3FS                  │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Client type          │ Kernel module    │ FUSE (userspace)     │
+│                      │ (fast, fragile)  │ (slower, safe)       │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Data replication     │ None (RAID per   │ Chain replication    │
+│                      │ OST) or mirroring│ 3× across nodes      │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Data placement       │ Striping across  │ Chunks assigned to   │
+│                      │ OSTs (round-robin│ chains by metadata   │
+│                      │ within a file)   │ cluster              │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Read distribution    │ Each stripe from │ CRAQ: any chain node │
+│                      │ its single OST   │ can serve reads      │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Consistency model    │ POSIX locks      │ Chain tail commit    │
+│                      │ (LDLM)           │ (simpler)            │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Metadata             │ MDS (central,    │ Raft (3-node,        │
+│                      │ DNE for scaling) │ auto-failover ~1s)   │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Metadata failover    │ Active-passive   │ Raft election        │
+│                      │ (30-120s)        │ (~1 second)          │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Network              │ LNet (IB, TCP,   │ RDMA-native (IB/RoCE │
+│                      │ Cray, routing)   │ only, no TCP fallback│
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Self-healing         │ No (manual RAID/ │ Yes (automatic       │
+│                      │ OST recovery)    │ re-replication)      │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Storage media        │ Any (HDD, SSD,   │ NVMe only            │
+│                      │ NVMe, RAID)      │                      │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Maturity             │ 20+ years        │ New (2025)           │
+│                      │ Battle-tested    │ DeepSeek only        │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Community            │ Large (DDN, labs,│ Small (DeepSeek)     │
+│                      │ vendors)         │                      │
+├──────────────────────┼──────────────────┼──────────────────────┤
+│ Best for             │ General HPC,     │ RDMA-native AI       │
+│                      │ mixed workloads  │ clusters             │
+└──────────────────────┴──────────────────┴──────────────────────┘
+
+Where Lustre wins:
+  - Ecosystem: tools, monitoring, cloud support (FSx)
+  - Flexibility: works on any hardware, any network
+  - Track record: proven at exascale (Frontier: 35 PB Lustre)
+  - PFL: smart auto-tiered striping per file region
+
+Where 3FS wins:
+  - RDMA efficiency: one-sided reads bypass storage CPU
+  - Self-healing: automatic re-replication on failure
+  - Metadata failover: Raft is faster than active-passive
+  - Read scaling: CRAQ reads from all replicas, not just one OST
+  - Simpler consistency: chain replication vs distributed locks
+```
+
+---
+
+## 15. Key Numbers
+
+```
+Typical large Lustre deployment:
+
+  OSSes:                     50-200 servers
+  OSTs per OSS:              2-4 (each an NVMe or HDD RAID array)
+  MDSes:                     1-2 (with DNE for parallel creates)
+  Aggregate read bandwidth:  500 GB/s - 2+ TB/s
+  Aggregate write bandwidth: 300 GB/s - 1+ TB/s
+  Single-client read:        10-25 GB/s (InfiniBand dependent)
+  Single-client write:       5-15 GB/s
+  Metadata ops (single MDS): 100K-300K ops/sec (stat/open)
+  File create rate:          50K-100K creates/sec per MDS
+  Stripe size:               1 MB default (configurable)
+  Max stripe count:          2000 (practical: match OST count)
+  Max file size:              ~32 PB (stripe_count × OST capacity)
+  Max filesystem size:        ~500 PB+
+  Network:                   InfiniBand (HDR/NDR) or TCP
+  Client:                    Linux kernel module
+  Backend FS:                ldiskfs (fast) or ZFS (checksums)
+
+  Reference deployments:
+    Frontier (ORNL):    35 PB, 480 OSSes, ~5 TB/s read
+    El Capitan (LLNL):  ~30 PB Lustre
+    Meta AI:            Multiple Lustre clusters for LLaMA training
+    AWS FSx for Lustre: Managed Lustre, 100s of GB/s per filesystem
 ```

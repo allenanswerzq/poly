@@ -133,51 +133,186 @@ Naive approach: send everything to GPU 0, sum, broadcast back.
   GPU 0's bandwidth is the bottleneck. Doesn't scale.
 
 Ring algorithm: arrange GPUs in a ring. Two phases.
+```
 
-  PHASE 1: REDUCE-SCATTER (N-1 steps)
-  ────────────────────────────────────
-  Split each GPU's buffer into N chunks (4 chunks for 4 GPUs).
-  Each step: every GPU sends one chunk clockwise and receives one.
-  Accumulate (add) the received chunk to its own.
+### 3.1 Setup — Split Each Buffer Into N Chunks
 
-  Step 0:  GPU0 sends chunk0 → GPU1
-           GPU1 sends chunk1 → GPU2
-           GPU2 sends chunk2 → GPU3
-           GPU3 sends chunk3 → GPU0
+```
+4 GPUs, each has a gradient buffer [a, b, c, d] (4 chunks).
+Using small numbers for clarity:
 
-  Step 1:  Each GPU sends its updated chunk one more step clockwise.
-           GPU0 sends (chunk3+its_chunk3) → GPU1
-           GPU1 sends (chunk0+two values) → GPU2
-           ...
+  GPU 0: [a0, b0, c0, d0] = [1,  5,  9, 13]
+  GPU 1: [a1, b1, c1, d1] = [2,  6, 10, 14]
+  GPU 2: [a2, b2, c2, d2] = [3,  7, 11, 15]
+  GPU 3: [a3, b3, c3, d3] = [4,  8, 12, 16]
 
-  Step 2:  One more rotation.
+  Goal after AllReduce(SUM): every GPU has [10, 26, 42, 58]
+    (1+2+3+4=10, 5+6+7+8=26, 9+10+11+12=42, 13+14+15+16=58)
 
-  After 3 steps (N-1):
-    Each GPU has ONE fully-reduced chunk.
-    GPU 0 has sum of all chunk3s.
-    GPU 1 has sum of all chunk0s.
-    GPU 2 has sum of all chunk1s.
-    GPU 3 has sum of all chunk2s.
+  The ring (clockwise):  GPU0 → GPU1 → GPU2 → GPU3 → GPU0
+```
 
+### 3.2 Phase 1: Reduce-Scatter (3 steps for 4 GPUs)
 
-  PHASE 2: ALLGATHER (N-1 steps)
-  ────────────────────────────────
-  Now distribute the completed chunks to all GPUs.
-  Same ring, same rotation, but just overwrite (no addition).
+```
+Each GPU sends ONE chunk clockwise and RECEIVES one from its left neighbor.
+The received chunk is ADDED to its own chunk in that position.
 
-  After 3 more steps:
-    Every GPU has ALL the fully-reduced chunks.
-    = AllReduce complete.
+───────────────────────────────────────────────────────────────────
+STEP 0:  Each GPU sends chunk[gpu_id] clockwise.
+───────────────────────────────────────────────────────────────────
 
+        sends chunk 0          sends chunk 1
+  GPU0 ──────────────► GPU1 ──────────────► GPU2
+    ▲                                          │
+    │    sends chunk 3          sends chunk 2  │
+  GPU3 ◄──────────────── GPU3 ◄────────────────┘
+                          (wait, let me draw this properly)
 
-  Total steps: 2 × (N-1) = 6 steps for 4 GPUs.
-  Data per step per GPU: 400MB / 4 = 100 MB.
-  Total data moved per GPU: 2 × (N-1)/N × 400 MB ≈ 600 MB.
+  GPU 0: sends a0 (=1)  → GPU 1,   receives d3 (=16) from GPU 3
+  GPU 1: sends b1 (=6)  → GPU 2,   receives a0 (=1)  from GPU 0
+  GPU 2: sends c2 (=11) → GPU 3,   receives b1 (=6)  from GPU 1
+  GPU 3: sends d3 (=16) → GPU 0,   receives c2 (=11) from GPU 2
 
-  KEY PROPERTY: bandwidth is INDEPENDENT of number of GPUs.
-    Each GPU sends 2 × (N-1)/N × data ≈ 2 × data.
-    Whether you have 4 GPUs or 4000, same bandwidth per GPU.
-    Time = 2 × data_size / bandwidth_per_link.
+  After receiving, ADD to own chunk at that position:
+
+  GPU 0: [a0,  b0,  c0,  d0+d3]  = [ 1,  5,  9,  29]
+                              ^^     chunk d now has 13+16=29
+  GPU 1: [a1+a0, b1,  c1,  d1]   = [ 3,  6, 10,  14]
+          ^^                         chunk a now has 2+1=3
+  GPU 2: [a2,  b2+b1, c2,  d2]   = [ 3, 13, 11,  15]
+               ^^                    chunk b now has 7+6=13
+  GPU 3: [a3,  b3,  c3+c2, d3]   = [ 4,  8, 23,  16]
+                    ^^               chunk c now has 12+11=23
+
+───────────────────────────────────────────────────────────────────
+STEP 1:  Each GPU sends its UPDATED chunk one position clockwise.
+         (send the chunk that was just accumulated)
+───────────────────────────────────────────────────────────────────
+
+  GPU 0: sends d0+d3 (=29)  → GPU 1,  receives c3+c2 (=23) from GPU 3
+  GPU 1: sends a1+a0 (=3)   → GPU 2,  receives d0+d3 (=29) from GPU 0
+  GPU 2: sends b2+b1 (=13)  → GPU 3,  receives a1+a0 (=3)  from GPU 1
+  GPU 3: sends c3+c2 (=23)  → GPU 0,  receives b2+b1 (=13) from GPU 2
+
+  After ADD:
+
+  GPU 0: [ 1,  5,  9+23,  29]    = [ 1,  5, 32,  29]
+                   ^^                  chunk c has 9+23=32 (3 of 4 values)
+  GPU 1: [ 3,  6, 10,  14+29]    = [ 3,  6, 10,  43]
+                        ^^            chunk d has 14+29=43 (3 of 4 values)
+  GPU 2: [3+3, 13, 11,  15]      = [ 6, 13, 11,  15]
+          ^^                          chunk a has 3+3=6 (3 of 4 values)
+  GPU 3: [ 4, 8+13, 23,  16]     = [ 4, 21, 23,  16]
+              ^^                      chunk b has 8+13=21 (3 of 4 values)
+
+───────────────────────────────────────────────────────────────────
+STEP 2:  One more rotation. (last step of reduce-scatter)
+───────────────────────────────────────────────────────────────────
+
+  GPU 0: sends c (=32) → GPU 1,  receives b (=21) from GPU 3
+  GPU 1: sends d (=43) → GPU 2,  receives c (=32) from GPU 0
+  GPU 2: sends a (=6)  → GPU 3,  receives d (=43) from GPU 1
+  GPU 3: sends b (=21) → GPU 0,  receives a (=6)  from GPU 2
+
+  After ADD:
+
+  GPU 0: [ 1, 5+21, 32,  29]     = [ 1, ★26, 32,  29]
+                                       chunk b = 5+21 = 26 ✓ COMPLETE
+  GPU 1: [ 3,  6, 10+32, 43]     = [ 3,  6, ★42,  43]
+                                       chunk c = 10+32 = 42 ✓ COMPLETE
+  GPU 2: [ 6, 13, 11,  15+43]    = [ 6, 13, 11, ★58]
+                                       chunk d = 15+43 = 58 ✓ COMPLETE
+  GPU 3: [4+6, 21, 23,  16]      = [★10, 21, 23,  16]
+                                       chunk a = 4+6 = 10 ✓ COMPLETE
+
+REDUCE-SCATTER DONE. Each GPU has ONE fully-reduced chunk (marked ★):
+  GPU 0: [ _,  26,  _,  _]   ← owns chunk b (fully reduced)
+  GPU 1: [ _,   _, 42,  _]   ← owns chunk c
+  GPU 2: [ _,   _,  _, 58]   ← owns chunk d
+  GPU 3: [10,   _,  _,  _]   ← owns chunk a
+```
+
+### 3.3 Phase 2: AllGather (3 more steps)
+
+```
+Same ring, same direction. But now just OVERWRITE (no addition).
+Each GPU sends its completed chunk around the ring.
+
+───────────────────────────────────────────────────────────────────
+STEP 3:
+───────────────────────────────────────────────────────────────────
+  GPU 0: sends 26 (chunk b) → GPU 1,  receives 10 (chunk a) from GPU 3
+  GPU 1: sends 42 (chunk c) → GPU 2,  receives 26 (chunk b) from GPU 0
+  GPU 2: sends 58 (chunk d) → GPU 3,  receives 42 (chunk c) from GPU 1
+  GPU 3: sends 10 (chunk a) → GPU 0,  receives 58 (chunk d) from GPU 2
+
+  GPU 0: [10, 26,  _,  _]
+  GPU 1: [ _, 26, 42,  _]
+  GPU 2: [ _,  _, 42, 58]
+  GPU 3: [10,  _,  _, 58]
+
+───────────────────────────────────────────────────────────────────
+STEP 4:
+───────────────────────────────────────────────────────────────────
+  GPU 0: sends 10 → GPU 1,  receives 58 from GPU 3
+  GPU 1: sends 26 → GPU 2,  receives 10 from GPU 0
+  GPU 2: sends 42 → GPU 3,  receives 26 from GPU 1
+  GPU 3: sends 58 → GPU 0,  receives 42 from GPU 2
+
+  GPU 0: [10, 26,  _, 58]
+  GPU 1: [10, 26, 42,  _]
+  GPU 2: [ _, 26, 42, 58]
+  GPU 3: [10,  _, 42, 58]
+
+───────────────────────────────────────────────────────────────────
+STEP 5:  (final step)
+───────────────────────────────────────────────────────────────────
+  GPU 0: sends 58 → GPU 1,  receives 42 from GPU 3
+  GPU 1: sends 10 → GPU 2,  receives 58 from GPU 0
+  GPU 2: sends 26 → GPU 3,  receives 10 from GPU 1
+  GPU 3: sends 42 → GPU 0,  receives 26 from GPU 2
+
+  GPU 0: [10, 26, 42, 58]  ✓
+  GPU 1: [10, 26, 42, 58]  ✓
+  GPU 2: [10, 26, 42, 58]  ✓
+  GPU 3: [10, 26, 42, 58]  ✓
+
+ALLREDUCE COMPLETE!
+
+Every GPU now has [10, 26, 42, 58] = sum of all original buffers.
+Total steps: 2 × (4-1) = 6.
+Each step: each GPU sends and receives exactly 1 chunk (100 MB).
+```
+
+### 3.4 Why Ring AllReduce Is Bandwidth-Optimal
+
+```
+  ┌───────────────────────────────────────────────────────────────┐
+  │                                                               │
+  │  Per GPU, total data sent:                                   │
+  │    Phase 1 (reduce-scatter): (N-1) steps × (data/N) per step│
+  │      = (N-1)/N × data ≈ data    (for large N)               │
+  │                                                               │
+  │    Phase 2 (allgather): same                                 │
+  │      = (N-1)/N × data ≈ data                                │
+  │                                                               │
+  │    Total per GPU: ~2 × data                                  │
+  │                                                               │
+  │  This is the SAME whether N=4 or N=4000.                    │
+  │  Adding more GPUs does NOT increase per-GPU bandwidth usage. │
+  │  The only thing that grows is LATENCY (more steps).          │
+  │                                                               │
+  │  Time = 2 × (N-1) × latency + 2 × data / bandwidth         │
+  │           ^^^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^^      │
+  │           grows with N          constant (bandwidth term)    │
+  │           (but small for        (dominates for large data)   │
+  │            large messages)                                    │
+  │                                                               │
+  │  For ML training (gradients are 100s of MB):                 │
+  │    bandwidth term dominates → ring is near-optimal.          │
+  │                                                               │
+  └───────────────────────────────────────────────────────────────┘
 
   ┌──────┐      ┌──────┐
   │ GPU0 │─────►│ GPU1 │
@@ -193,6 +328,10 @@ Ring algorithm: arrange GPUs in a ring. Two phases.
   │ GPU3 │◄─────│ GPU2 │
   │      │─────►│      │
   └──────┘      └──────┘
+
+  Each link carries exactly data/N per step.
+  All links active simultaneously → full bisection bandwidth used.
+  No single GPU is a bottleneck (unlike naive "send to GPU 0").
 ```
 
 ---
@@ -399,4 +538,236 @@ AllReduce scaling:
   Tree algorithm:             O(log N) latency, less bandwidth
   For 1 GB across 128 GPUs:  ~20-50 ms over InfiniBand
   For 1 GB across 8 GPUs:    ~2-3 ms over NVLink
+```
+
+---
+
+## 9. How the GPU Schedules and Runs CUDA Streams
+
+### 9.1 GPU Hardware Engines
+
+```
+The GPU has HARDWARE QUEUES, not a software scheduler.
+Unlike a CPU (where the OS picks threads), the GPU has fixed hardware
+engines that pull work from queues:
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │  GPU HARDWARE                                                │
+  │                                                              │
+  │  ┌────────────────────────────────────────────────────────┐ │
+  │  │ HOST INTERFACE (receives commands from CPU via PCIe)   │ │
+  │  └────────────────────┬───────────────────────────────────┘ │
+  │                       │                                      │
+  │                       ▼                                      │
+  │  ┌──────────────────────────────────────────────────────┐   │
+  │  │ COMMAND PROCESSOR (front-end)                        │   │
+  │  │                                                      │   │
+  │  │ Receives commands from CPU driver, dispatches to     │   │
+  │  │ the correct hardware engine.                         │   │
+  │  │                                                      │   │
+  │  │ Hardware Work Queues:                                │   │
+  │  │   ┌───────────────────┐                              │   │
+  │  │   │ Compute Engine(s) │ ← kernel launches go here   │   │
+  │  │   │ (GPC/SM dispatch) │                              │   │
+  │  │   └───────────────────┘                              │   │
+  │  │   ┌───────────────────┐                              │   │
+  │  │   │ Copy Engine 0     │ ← H→D memcpy goes here     │   │
+  │  │   │ (DMA controller)  │                              │   │
+  │  │   └───────────────────┘                              │   │
+  │  │   ┌───────────────────┐                              │   │
+  │  │   │ Copy Engine 1     │ ← D→H memcpy goes here     │   │
+  │  │   │ (DMA controller)  │                              │   │
+  │  │   └───────────────────┘                              │   │
+  │  │                                                      │   │
+  │  └──────────────────────────────────────────────────────┘   │
+  │                                                              │
+  │  These engines run INDEPENDENTLY and CONCURRENTLY.          │
+  │  Copy Engine 0 can DMA while Compute Engine runs a kernel.  │
+  │                                                              │
+  └──────────────────────────────────────────────────────────────┘
+```
+
+### 9.2 How CUDA Streams Map to Hardware
+
+```
+CUDA streams are SOFTWARE queues on the CPU side.
+The GPU driver translates them into hardware queue submissions.
+
+  CPU side (your code):              GPU side (hardware):
+
+  Stream A: [kernel1, kernel2]       Compute Engine queue:
+  Stream B: [memcpy_H2D, kernel3]     [kernel1, kernel3, kernel2]
+  Stream C: [memcpy_D2H]              (interleaved from all streams)
+
+                                     Copy Engine 0 queue:
+                                       [memcpy_H2D]
+
+                                     Copy Engine 1 queue:
+                                       [memcpy_D2H]
+
+  The driver's job:
+    1. Take CUDA stream commands
+    2. Send kernels → compute engine queue
+    3. Send H→D copies → copy engine 0 queue
+    4. Send D→H copies → copy engine 1 queue
+    5. Insert DEPENDENCIES (from stream ordering) as hardware fences
+
+  Within a stream: operations are ordered (A before B before C).
+  Across streams: no ordering UNLESS you add explicit sync.
+```
+
+### 9.3 The Compute Engine — How Kernels Run
+
+```
+When a kernel reaches the front of the compute engine queue:
+
+  1. GRID SCHEDULER reads the launch config:
+     kernel<<<grid(256), block(256), shared_mem, stream>>>
+     → 256 thread blocks, 256 threads each
+
+  2. GRID SCHEDULER dispatches thread blocks to GPCs
+     (Graphics Processing Clusters, each containing multiple SMs)
+
+     ┌──────────────────────────────────────────────────────┐
+     │  GPC 0           GPC 1           GPC 2    ...       │
+     │  ┌────┐┌────┐   ┌────┐┌────┐   ┌────┐┌────┐       │
+     │  │SM 0││SM 1│   │SM 2││SM 3│   │SM 4││SM 5│       │
+     │  └────┘└────┘   └────┘└────┘   └────┘└────┘       │
+     │                                                     │
+     │  Grid Scheduler assigns blocks round-robin:        │
+     │    Block 0 → SM 0                                  │
+     │    Block 1 → SM 1                                  │
+     │    ...                                              │
+     │    Block 107 → SM 107                              │
+     │    Block 108 → SM 0 (wraps, if SM 0 is done)      │
+     │                                                     │
+     │  An SM can run multiple blocks simultaneously      │
+     │  (if it has enough registers + shared memory).     │
+     └──────────────────────────────────────────────────────┘
+
+  3. Inside each SM, WARP SCHEDULERS manage execution:
+     Block of 256 threads = 8 warps of 32 threads.
+     SM has 4 warp schedulers. Each cycle, each scheduler picks
+     one READY warp and issues its next instruction.
+
+     ┌────────────────────────────────────────────────┐
+     │  SM (one Streaming Multiprocessor)              │
+     │                                                │
+     │  Warp Scheduler 0 → picks warp, issues insn   │
+     │  Warp Scheduler 1 → picks warp, issues insn   │
+     │  Warp Scheduler 2 → picks warp, issues insn   │
+     │  Warp Scheduler 3 → picks warp, issues insn   │
+     │                                                │
+     │  Warps ready?                                  │
+     │    Warp 0: READY   ← scheduler picks this     │
+     │    Warp 1: STALLED (waiting for memory load)   │
+     │    Warp 2: READY   ← scheduler picks this     │
+     │    Warp 3: STALLED                             │
+     │    Warp 4: READY                               │
+     │    ...                                          │
+     │                                                │
+     │  Switching between warps is FREE.              │
+     │  No context switch cost (all state in registers│
+     │  simultaneously). This is how GPUs hide latency│
+     │  — while one warp waits for memory (~400 cycles│
+     │  another warp runs. No cycles wasted.          │
+     └────────────────────────────────────────────────┘
+```
+
+### 9.4 Concurrent Kernels from Different Streams
+
+```
+Can two kernels from different streams run at the same time?
+
+  YES — if the GPU has enough SMs to fit both.
+
+  Stream A: kernel_small (needs 4 SMs)
+  Stream B: kernel_big   (needs 100 SMs)
+
+  GPU has 108 SMs (H100):
+    kernel_small gets SMs [0-3]
+    kernel_big   gets SMs [4-107]
+    Both run simultaneously.
+
+  But if both kernels need all 108 SMs:
+    First kernel fills all SMs.
+    Second kernel WAITS until some SMs free up.
+    They might overlap partially (as blocks from kernel1 finish,
+    blocks from kernel2 start on those SMs).
+
+  This is why NCCL uses separate streams for comms:
+
+    Compute stream: [backward pass kernel]    ← uses ~all SMs
+    NCCL stream:    [AllReduce]               ← uses NIC, not SMs!
+
+    AllReduce is mostly NIC + DMA work, not SM compute.
+    So it truly runs concurrently with the backward kernel.
+    The SM just kicks off the RDMA transfer, then the NIC does the rest.
+```
+
+### 9.5 Stream Synchronization — How Ordering Is Enforced
+
+```
+Within a stream: GPU hardware guarantees ordering.
+  Stream A: [kernel1] → [kernel2]
+  kernel2 will NOT start until kernel1 finishes.
+  Enforced by hardware fences in the compute engine queue.
+
+Across streams: no ordering by default.
+  Stream A: [kernel1]
+  Stream B: [kernel2]
+  kernel1 and kernel2 may run in any order, or overlap.
+
+To add cross-stream dependencies: CUDA Events.
+
+  cudaEvent_t event;
+  cudaEventCreate(&event);
+
+  // Stream A does work, then records an event
+  kernel1<<<..., streamA>>>();
+  cudaEventRecord(event, streamA);   // "mark this point in stream A"
+
+  // Stream B waits for that event before proceeding
+  cudaStreamWaitEvent(streamB, event);  // "don't run until event fires"
+  kernel2<<<..., streamB>>>();
+
+  Timeline:
+    Stream A: [kernel1]──●event
+    Stream B:       wait...[kernel2]
+                          ↑
+                   starts only after event fires
+
+Under the hood: cudaEventRecord inserts a hardware semaphore write.
+cudaStreamWaitEvent inserts a hardware semaphore wait.
+No CPU involvement once submitted — the GPU enforces it.
+
+
+THE DEFAULT STREAM TRAP:
+  Stream 0 (default stream) implicitly synchronizes with all streams.
+
+  kernel1<<<..., streamA>>>();
+  kernel_default<<<...>>>();      // default stream — WAITS for streamA!
+  kernel2<<<..., streamB>>>();    // WAITS for default to finish!
+
+  The default stream acts as a barrier. Kills concurrency.
+  Rule: never mix default stream with explicit streams.
+  Use --default-stream per-thread to avoid this.
+```
+
+### 9.6 Summary — The Full Hierarchy
+
+```
+  YOUR CODE          CUDA DRIVER         GPU HARDWARE
+  ──────────         ───────────         ────────────
+  Stream A ────────► driver queue  ────► Compute Engine
+  Stream B ────────►               ────► (kernel dispatch)
+  Stream C ────────►               ────► Copy Engine 0
+                                   ────► Copy Engine 1
+
+  CUDA stream    = software FIFO of commands
+  CUDA event     = software sync point → hardware semaphore
+  Compute Engine = hardware that dispatches thread blocks to SMs
+  Copy Engine    = hardware DMA controller for memcpy
+  SM             = hardware that executes warps (32-thread SIMD)
+  Warp Scheduler = hardware that picks which warp runs each cycle
 ```

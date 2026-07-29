@@ -171,6 +171,236 @@ This is why PyTorch is "define-by-run" (dynamic graph):
   (vs TensorFlow 1.x which built a static graph first)
 ```
 
+### 2.1 How the Computation Graph Is Built
+
+```
+Every torch.Tensor has two key fields:
+
+  tensor.data       → the actual numbers (stored on CPU or GPU)
+  tensor.grad_fn    → pointer to the Function node that CREATED this tensor
+                      (None if the tensor was created by the user, not by an op)
+  tensor.requires_grad → should autograd track this tensor?
+
+When you do operations on tensors with requires_grad=True,
+PyTorch RECORDS every operation into a DAG (directed acyclic graph):
+
+  # Python code                    # What PyTorch builds internally
+  w = torch.randn(3, 3,
+        requires_grad=True)        → w.grad_fn = None  (leaf tensor)
+
+  x = torch.randn(3, 1)           → x.grad_fn = None  (leaf, no grad needed)
+
+  y = w @ x                       → y.grad_fn = MmBackward0
+                                     MmBackward0.saved_tensors = (w, x)
+                                     MmBackward0.next = [w.grad_accumulator]
+
+  z = y.relu()                    → z.grad_fn = ReluBackward0
+                                     ReluBackward0.saved_tensors = (y,)
+                                     ReluBackward0.next = [MmBackward0]
+
+  loss = z.sum()                  → loss.grad_fn = SumBackward0
+                                     SumBackward0.next = [ReluBackward0]
+
+The graph after forward:
+
+  ┌──────────────┐
+  │   loss       │  loss.grad_fn = SumBackward0
+  │  (scalar)    │
+  └──────┬───────┘
+         │ .next
+         ▼
+  ┌──────────────┐
+  │ SumBackward0 │  "I know how to differentiate sum()"
+  └──────┬───────┘
+         │ .next
+         ▼
+  ┌──────────────┐
+  │ReluBackward0 │  "I know how to differentiate relu()"
+  │              │   saved: (y,) ← needs y to know where relu was 0
+  └──────┬───────┘
+         │ .next
+         ▼
+  ┌──────────────┐
+  │ MmBackward0  │  "I know how to differentiate matmul()"
+  │              │   saved: (w, x) ← needs both inputs for d/dw and d/dx
+  └──────┬───────┘
+         │ .next
+         ▼
+  ┌──────────────┐
+  │ w (leaf)     │  w.grad_fn = None (this is where gradients accumulate)
+  │              │  w.grad = None (will be filled by backward)
+  └──────────────┘
+
+  Each grad_fn is a FUNCTION NODE that knows:
+    1. How to compute the LOCAL gradient (Jacobian) for its operation
+    2. Which tensors it saved for this computation
+    3. Which grad_fn to pass the result to next (.next pointers)
+```
+
+### 2.2 How backward() Walks the Graph (Reverse-Mode AD)
+
+```
+loss.backward() triggers the engine:
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                                                                  │
+  │  Step 1: Start at loss. grad_output = 1.0 (dloss/dloss = 1)   │
+  │                                                                  │
+  │  Step 2: SumBackward0.backward(grad_output=1.0)                │
+  │    sum is: loss = z0 + z1 + z2                                  │
+  │    ∂loss/∂zi = 1.0 for all i                                   │
+  │    → passes [1.0, 1.0, 1.0] to ReluBackward0                  │
+  │                                                                  │
+  │  Step 3: ReluBackward0.backward(grad_output=[1, 1, 1])        │
+  │    relu(y) = y if y > 0, else 0                                │
+  │    ∂relu/∂y = 1 if y > 0, else 0                              │
+  │    Uses saved tensor y to compute the mask:                    │
+  │      y = [0.5, -0.3, 1.2]                                     │
+  │      mask = [1, 0, 1]        (where y > 0)                    │
+  │    grad = grad_output * mask = [1, 0, 1]                       │
+  │    → passes [1, 0, 1] to MmBackward0                          │
+  │                                                                  │
+  │  Step 4: MmBackward0.backward(grad_output=[1, 0, 1])         │
+  │    y = w @ x                                                    │
+  │    ∂y/∂w = grad_output @ x.T     (gradient w.r.t. weights)    │
+  │    ∂y/∂x = w.T @ grad_output     (gradient w.r.t. input)      │
+  │    Uses saved tensors (w, x) for this computation.             │
+  │                                                                  │
+  │    → ∂y/∂w is ACCUMULATED into w.grad                         │
+  │      (w.grad += ∂y/∂w, because w is a leaf tensor)            │
+  │    → ∂y/∂x is discarded (x.requires_grad=False)              │
+  │                                                                  │
+  │  Step 5: Done. w.grad now contains ∂loss/∂w.                  │
+  │    optimizer.step() uses w.grad to update w.                   │
+  │                                                                  │
+  └──────────────────────────────────────────────────────────────────┘
+
+The chain rule in action:
+
+  ∂loss/∂w = ∂loss/∂loss × ∂loss/∂z × ∂z/∂y × ∂y/∂w
+               (=1)        (sum)     (relu)   (matmul)
+               Step 1      Step 2    Step 3    Step 4
+
+  Each grad_fn computes ONE local derivative and passes it backward.
+  The chain rule is just multiplication along the path.
+```
+
+### 2.3 What "Saved Tensors" Means for Memory
+
+```
+During forward, each grad_fn SAVES tensors needed for backward:
+
+  MmBackward0 saves (w, x)     → needs both to compute d/dw and d/dx
+  ReluBackward0 saves (y,)     → needs y to know the relu mask
+  SoftmaxBackward saves (out,) → needs softmax output for gradient
+
+  These saved tensors stay in GPU memory until backward() runs.
+  THIS is why activations dominate memory during training:
+
+    Forward through 80 transformer layers:
+      Each layer saves activations for backward.
+      Hidden dim 8192, batch=32, seq=2048, bf16:
+        Per layer: 32 × 2048 × 8192 × 2 bytes ≈ 1 GB
+        80 layers: ~80 GB of saved activations.
+        This is why large models OOM even if weights fit.
+
+  Gradient checkpointing solves this:
+    DON'T save activations. Instead, re-run forward during backward
+    to recompute them. Trades ~33% extra compute for ~80% less memory.
+
+    @torch.utils.checkpoint.checkpoint
+    def forward_block(x):
+        return transformer_layer(x)
+    # Activations NOT saved. Recomputed during backward.
+```
+
+### 2.4 The Autograd Engine (C++)
+
+```
+loss.backward() calls the C++ autograd engine:
+
+  1. Start with a queue: [(loss.grad_fn, grad_output=1.0)]
+
+  2. TOPOLOGICAL SORT (reverse order):
+     The engine processes nodes in reverse topological order
+     so that every node's outputs are ready before it runs.
+     (In practice, it uses a priority queue / task queue.)
+
+  3. For each node in the queue:
+     a) Call node.backward(grad_output) → computes local gradient
+     b) For each input tensor that needs grad:
+        If leaf tensor: ACCUMULATE grad into tensor.grad
+        If intermediate: push (next_grad_fn, grad) into the queue
+
+  4. Multi-threading:
+     The engine uses a THREAD POOL (not one thread).
+     Independent branches of the graph can run in parallel.
+     But on GPU: actual backward kernels run on CUDA streams,
+     so the C++ threads mostly just dispatch work to the GPU.
+
+  5. After backward:
+     - The computation graph is DESTROYED (freed).
+       grad_fn pointers are cleared. Saved tensors are freed.
+       This is why you can't call backward() twice by default.
+       (Use retain_graph=True to keep it, but that leaks memory.)
+     - Leaf tensors (parameters) have .grad populated.
+     - Optimizer reads .grad and updates parameters.
+
+  ┌──────────────────────────────────────────────────────────┐
+  │                                                          │
+  │  forward():                                             │
+  │    builds graph (grad_fn chain + saved tensors)         │
+  │    GPU memory grows (activations saved)                 │
+  │                                                          │
+  │  backward():                                            │
+  │    walks graph in reverse                               │
+  │    computes gradients via chain rule                    │
+  │    frees saved tensors as it goes (memory shrinks)      │
+  │    destroys the graph when done                         │
+  │                                                          │
+  │  optimizer.step():                                       │
+  │    reads .grad, updates params                          │
+  │    no graph involvement                                 │
+  │                                                          │
+  │  optimizer.zero_grad():                                  │
+  │    resets .grad to None (or zero)                        │
+  │    ready for next forward-backward cycle                │
+  │                                                          │
+  └──────────────────────────────────────────────────────────┘
+```
+
+### 2.5 no_grad, inference_mode, and detach
+
+```
+Three ways to STOP autograd from tracking:
+
+  torch.no_grad():
+    with torch.no_grad():
+        y = model(x)
+    # No grad_fn nodes created. No saved tensors. No graph.
+    # y.requires_grad = False. Can't call y.backward().
+    # Use for: inference, evaluation, manual weight updates.
+
+  torch.inference_mode():
+    with torch.inference_mode():
+        y = model(x)
+    # Like no_grad() but FASTER — skips more internal bookkeeping.
+    # Tensors created here can't be used in autograd at all.
+    # Use for: production inference (slightly faster than no_grad).
+
+  tensor.detach():
+    y = (w @ x).detach()
+    # Creates a NEW tensor sharing the same data but with no grad_fn.
+    # Breaks the graph at this point.
+    # Use for: stopping gradient flow through specific paths.
+
+  Why these matter for training:
+    - Evaluation loop should ALWAYS use no_grad/inference_mode
+      (otherwise you waste GPU memory building unused graphs)
+    - Teacher model in knowledge distillation → detach()
+    - GAN discriminator output when training generator → detach()
+```
+
 ### 3. GPU Memory — The #1 Practical Concern
 
 ```

@@ -108,8 +108,8 @@ let avg_video_size_mb = 300;              // 300 MB average
 let storage_per_day_tb = uploads_per_day * avg_video_size_mb / 1_000_000;
 // ~216 TB/day new storage!
 
-// Bandwidth
-let avg_video_bitrate_mbps = 5;           // 5 Mbps
+let avg_video_bitr
+// Bandwidthate_mbps = 5;           // 5 Mbps
 let concurrent_viewers = 10_000_000;       // At any moment
 let bandwidth_tbps = concurrent_viewers * 5 / 1_000_000;
 // ~50 Tbps!

@@ -66,6 +66,9 @@ system-design-lab/
 | [Kafka](key-technologies/kafka/) | Event streaming backbone | Partitions, consumer groups, ordering |
 | [ZooKeeper](key-technologies/zookeeper/) | Distributed coordination | Leader election, distributed locks |
 | [Elasticsearch](key-technologies/elasticsearch/) | Full-text search | Inverted index, shards, analyzers |
+| [ML Models Timeline](key-technologies/ml-models/) | Understand model evolution and architecture tradeoffs | CNNs, RNNs, Transformers, diffusion, MoE, multimodal models |
+| [RL Frameworks](key-technologies/ml-training/rl-frameworks/) | Understand reinforcement learning training stacks | Gymnasium, SB3, CleanRL, RLlib, Brax, TRL, OpenRLHF, verl |
+| [MLSys 2026 Guide](key-technologies/mlsys-conferences/mlsys-2026/) | Learn current ML systems research from the conference | LLM serving, training, agents, compression, compilers, benchmarks |
 
 ### Phase 4: Scalability Patterns (Week 11-12)
 
