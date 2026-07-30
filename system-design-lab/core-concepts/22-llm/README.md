@@ -564,6 +564,328 @@ Total for n tokens: O(n²)       Total for n tokens: O(n)
 ~40 GB of GPU memory just for the cache. This is why long-context models are
 expensive.
 
+### 6.4 KV Cache — Full Walkthrough (From Prompt to Generation)
+
+**Step 1: Input → Embeddings**
+
+```
+Prompt: "The weather today is"
+
+Tokenize: ["The", "weather", "today", "is"] → [464, 8345, 2060, 318]
+                                                 (token IDs from vocabulary)
+
+Embedding lookup (from trained weight matrix):
+  token 464  → [0.12, -0.34, 0.56, ...] (4096-dim vector)
+  token 8345 → [0.78, 0.23, -0.11, ...]
+  token 2060 → [-0.45, 0.67, 0.33, ...]
+  token 318  → [0.91, -0.12, 0.44, ...]
+
+Now you have a matrix: 4 tokens × 4096 dimensions.
+```
+
+**Step 2: Where Q, K, V Come From**
+
+```
+Each transformer layer has attention. For EACH token's embedding,
+the layer computes THREE vectors using trained weight matrices:
+
+  Q = embedding × W_Q    (Query:  "what am I looking for?")
+  K = embedding × W_K    (Key:    "what do I contain?")
+  V = embedding × W_V    (Value:  "what information do I provide?")
+
+  W_Q, W_K, W_V are trained weight matrices (fixed after training).
+
+For our 4 tokens:
+  ┌────────────────────────────────────────────────────────────────┐
+  │  Token          │ Q (query)        │ K (key)        │ V (value)│
+  ├─────────────────┼──────────────────┼────────────────┼──────────┤
+  │ "The"           │ q₀ = emb₀ × W_Q │ k₀ = emb₀ × W_K│ v₀      │
+  │ "weather"       │ q₁ = emb₁ × W_Q │ k₁ = emb₁ × W_K│ v₁      │
+  │ "today"         │ q₂ = emb₂ × W_Q │ k₂ = emb₂ × W_K│ v₂      │
+  │ "is"            │ q₃ = emb₃ × W_Q │ k₃ = emb₃ × W_K│ v₃      │
+  └─────────────────┴──────────────────┴────────────────┴──────────┘
+
+  This is just matrix multiplication. Embeddings × Weights = Q, K, V.
+```
+
+**Step 3: Attention Computation**
+
+```
+Attention = "for each token, look at all previous tokens and decide
+             which ones are relevant"
+
+Due to causal masking, each token can ONLY attend to itself and earlier tokens.
+
+For token "The" (position 0) — can only see itself:
+
+  q₀ · k₀ / √d → score₀₀
+  weights = softmax([score₀₀]) = [1.00]
+                                   ↑
+                                  "The"
+  output₀ = 1.00 × v₀
+           = just its own value (no context yet, first token)
+
+
+For token "weather" (position 1) — sees "The" and itself:
+
+  q₁ · k₀ / √d → score₁₀     ("weather" asks: "how relevant is 'The'?")
+  q₁ · k₁ / √d → score₁₁     ("weather" asks: "how relevant is 'weather'?")
+
+  weights = softmax([score₁₀, score₁₁]) = [0.30, 0.70]
+                                             ↑     ↑
+                                           "The" "weather"
+  output₁ = 0.30 × v₀ + 0.70 × v₁
+           = "weather" now has some context from "The"
+
+
+For token "today" (position 2) — sees "The", "weather", and itself:
+
+  q₂ · k₀ / √d → score₂₀     ("today" asks: "how relevant is 'The'?")
+  q₂ · k₁ / √d → score₂₁     ("today" asks: "how relevant is 'weather'?")
+  q₂ · k₂ / √d → score₂₂     ("today" asks: "how relevant is 'today'?")
+
+  weights = softmax([score₂₀, score₂₁, score₂₂]) = [0.05, 0.40, 0.55]
+                                                       ↑     ↑      ↑
+                                                     "The" "weather" "today"
+  output₂ = 0.05 × v₀ + 0.40 × v₁ + 0.55 × v₂
+           = "today" draws context mostly from "weather" and itself
+
+
+For token "is" (position 3) — sees all 4 tokens:
+
+  q₃ · k₀ / √d → score₃₀     ("is" asks: "how relevant is 'The'?")
+  q₃ · k₁ / √d → score₃₁     ("is" asks: "how relevant is 'weather'?")
+  q₃ · k₂ / √d → score₃₂     ("is" asks: "how relevant is 'today'?")
+  q₃ · k₃ / √d → score₃₃     ("is" asks: "how relevant is 'is'?")
+
+  weights = softmax([score₃₀, score₃₁, score₃₂, score₃₃]) = [0.05, 0.60, 0.25, 0.10]
+                                                                 ↑     ↑      ↑     ↑
+                                                               "The" "weather" "today" "is"
+  output₃ = 0.05 × v₀ + 0.60 × v₁ + 0.25 × v₂ + 0.10 × v₃
+           = "is" draws heavily from "weather" — because "is" needs to know
+             WHAT "is" something → the subject "weather" is most relevant
+
+
+The full attention weight matrix (with causal mask):
+
+           Attending TO →
+           "The"   "weather"  "today"   "is"
+  From ↓
+  "The"     [ 1.00    ✗          ✗        ✗    ]  ← sees only itself
+  "weather" [ 0.30    0.70       ✗        ✗    ]  ← sees "The" + self
+  "today"   [ 0.05    0.40       0.55     ✗    ]  ← sees 3 tokens
+  "is"      [ 0.05    0.60       0.25     0.10 ]  ← sees all 4 tokens
+
+  ✗ = masked (−∞ before softmax → 0 weight → can't see future tokens)
+  Each row sums to 1.0 (softmax).
+  Later tokens have MORE context (can attend to more previous tokens).
+
+  The Q asks the question, K provides the match, V provides the answer.
+  Q·K = "how much should I attend?" V = "what to take from that token."
+```
+
+**Step 3.5: Why ALL Tokens Must Be Computed (Not Just the Last One)**
+
+```
+You might think: "We only use the last token's output to predict the next word.
+Why compute attention for 'The', 'weather', 'today' at all?"
+
+Answer: because there are MANY layers (80 in LLaMA-70B), and each layer's
+K,V vectors depend on the PREVIOUS layer's outputs for ALL tokens.
+
+WITH 1 LAYER (hypothetically — you COULD skip other rows):
+  "is" attends to raw embeddings: v₀, v₁, v₂, v₃
+  These come from the embedding table. No prior computation needed.
+  → You could just compute the last row. Other rows are independent.
+
+WITH 80 LAYERS (reality — you CANNOT skip):
+
+  Layer 1:
+    "The"     → attention → output₀¹  (just knows about "The")
+    "weather" → attention → output₁¹  (knows about "The" + "weather")
+    "today"   → attention → output₂¹  (knows about 3 tokens)
+    "is"      → attention → output₃¹  (knows about all 4)
+
+  Layer 2 takes layer 1's outputs as input:
+    NEW K,V for layer 2:
+      k₀² = W_K² × output₀¹   ← NEED output₀¹ (from "The"'s row in layer 1)
+      k₁² = W_K² × output₁¹   ← NEED output₁¹ (from "weather"'s row)
+      k₂² = W_K² × output₂¹   ← NEED output₂¹ (from "today"'s row)
+      v₀² = W_V² × output₀¹   ← same dependency
+      v₁² = W_V² × output₁¹
+      v₂² = W_V² × output₂¹
+
+    "is" in layer 2 attends to [k₀², k₁², k₂², k₃²]
+    These are DIFFERENT from layer 1's K,V — they're ENRICHED.
+    If we hadn't computed "weather"'s row in layer 1,
+    we wouldn't have output₁¹, so k₁² and v₁² wouldn't exist.
+
+  Layer 3 takes layer 2's outputs... and so on for 80 layers.
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │  The chain of dependencies:                                   │
+  │                                                               │
+  │  Layer 1: compute ALL 4 tokens → 4 outputs                   │
+  │       ↓                                                       │
+  │  Layer 2: use those 4 outputs → compute new K,V → 4 outputs  │
+  │       ↓                                                       │
+  │  Layer 3: use those 4 outputs → compute new K,V → 4 outputs  │
+  │       ↓                                                       │
+  │  ...80 layers...                                              │
+  │       ↓                                                       │
+  │  Layer 80: output₃⁸⁰ → linear → softmax → "sunny"           │
+  │                                                               │
+  │  Every token at every layer contributes to the final output.  │
+  │  You can't skip any of them.                                  │
+  └──────────────────────────────────────────────────────────────┘
+
+What "is" sees at layer 80 vs layer 1:
+
+  Layer 1:
+    v₁("weather") = just the raw concept of "weather"
+    → "is" knows: the word "weather" appeared
+
+  Layer 80:
+    v₁⁸⁰("weather") = 79 layers of enrichment
+    → "weather" now encodes: "this is the SUBJECT of a sentence,
+       it's modified by 'today', the sentence is asking about
+       weather CONDITIONS, common answers include sunny/rainy/cold,
+       the grammar expects an adjective next..."
+
+    → "is" attending to this enriched representation gets MUCH
+       better predictions than attending to raw embeddings.
+
+This is the whole POINT of deep networks:
+  Shallow = pattern matching (what words appeared?)
+  Deep = understanding (what does the sentence MEAN?)
+```
+
+**Step 4: Generate Next Token — Where KV Cache Saves Work**
+
+```
+After all layers process, the last token's output → predict next token:
+
+  output of "is" → linear layer → softmax over vocabulary (50,000 words)
+  → P("sunny") = 0.30, P("rainy") = 0.20, ...
+  → sample "sunny"
+
+Now the sequence is: "The weather today is sunny"
+We need to predict the NEXT token after "sunny."
+
+WITHOUT KV CACHE (naive, wasteful):
+  Recompute Q, K, V for ALL 5 tokens from scratch:
+    "The"     → q₀, k₀, v₀     ← already computed last time!
+    "weather" → q₁, k₁, v₁     ← already computed!
+    "today"   → q₂, k₂, v₂     ← already computed!
+    "is"      → q₃, k₃, v₃     ← already computed!
+    "sunny"   → q₄, k₄, v₄     ← only this is new
+
+  Attention for "sunny" needs: k₀,k₁,k₂,k₃,k₄ and v₀,v₁,v₂,v₃,v₄
+  We recomputed k₀-k₃ and v₀-v₃ for NOTHING. Wasted work.
+
+WITH KV CACHE (smart):
+  After processing "The weather today is":
+    SAVE in cache: k₀,k₁,k₂,k₃ and v₀,v₁,v₂,v₃
+
+  When "sunny" arrives:
+    Only compute: q₄, k₄, v₄ for the NEW token
+    Append k₄ to cached keys:   [k₀, k₁, k₂, k₃, k₄]
+    Append v₄ to cached values: [v₀, v₁, v₂, v₃, v₄]
+
+    Attention: q₄ · [k₀, k₁, k₂, k₃, k₄] → weights → weighted sum of [v₀...v₄]
+
+    SAME result, but only computed Q/K/V for 1 token instead of 5.
+```
+
+**Step 5: Full Generation with KV Cache**
+
+```
+Step-by-step generation:
+
+  Token 1-4: "The weather today is"  (PREFILL phase)
+    Compute all Q, K, V for 4 tokens in parallel (like a batch)
+    Cache: K = [k₀,k₁,k₂,k₃], V = [v₀,v₁,v₂,v₃]
+    Predict: "sunny"
+    THIS STEP IS COMPUTE-BOUND (lots of parallel matrix ops)
+
+  Token 5: "sunny"  (DECODE phase, one token at a time)
+    Compute Q, K, V for "sunny" only (1 token!)
+    Append to cache: K = [k₀,k₁,k₂,k₃,k₄], V = [v₀,...,v₄]
+    q₄ attends to all cached K,V → predict "and"
+
+  Token 6: "and"
+    Compute Q, K, V for "and" only
+    Append to cache: K = [k₀,...,k₅], V = [v₀,...,v₅]
+    q₅ attends to all cached K,V → predict "warm"
+
+  Token 7: "warm"
+    Compute Q, K, V for "warm" only
+    Append to cache: K = [k₀,...,k₆], V = [v₀,...,v₆]
+    q₆ attends to all cached K,V → predict <EOS>
+
+  ┌────────────────────────────────────────────────────────────────┐
+  │                    Without cache    │    With cache             │
+  ├────────────────────────────────────┼───────────────────────────┤
+  │ Token 5: compute K,V for 5 tokens │ compute K,V for 1 token  │
+  │ Token 6: compute K,V for 6 tokens │ compute K,V for 1 token  │
+  │ Token 7: compute K,V for 7 tokens │ compute K,V for 1 token  │
+  │ ...                                │ ...                       │
+  │ Token 100: compute for 100 tokens │ compute K,V for 1 token  │
+  │                                    │                           │
+  │ Total: 5+6+7+...+100 = ~5000 ops │ Total: 96 × 1 = 96 ops  │
+  │                                    │ → ~50x less compute!      │
+  └────────────────────────────────────┴───────────────────────────┘
+```
+
+**Why Prefill vs Decode Are Different Bottlenecks:**
+
+```
+  PREFILL (process the entire prompt):
+    Input: 4 tokens × W_Q, W_K, W_V → large matrix multiply
+    All 4 tokens processed IN PARALLEL (like a batch)
+    → COMPUTE-BOUND (lots of useful FLOPs per byte loaded)
+    → Tensor Cores busy, GPU cores busy
+    → Fast! Processes 1000s of tokens in milliseconds.
+
+  DECODE (generate one token at a time):
+    Input: 1 token × W_Q, W_K, W_V → tiny matrix multiply
+    Must still load ALL model weights from HBM for this 1 token
+    → MEMORY-BOUND (1 FLOP per byte loaded)
+    → GPU mostly waiting for HBM, cores idle
+    → Slow! ~30ms per token on 70B model.
+
+  This is why "time to first token" (prefill) is fast,
+  but "tokens per second" (decode) is slow.
+  Different optimizations for each:
+    Prefill: Tensor Cores, larger batch, compute optimization
+    Decode:  more HBM bandwidth, quantization, speculative decoding
+```
+
+**Why KV Cache Eats So Much Memory:**
+
+```
+For each token in the sequence, you store K and V vectors.
+Per layer, per attention head.
+
+  LLaMA 70B:
+    80 layers × 64 heads × 2 (K+V) × 128 dims × 2 bytes (FP16)
+    = 2.6 MB per token
+
+  For a 4096-token context:
+    4096 × 2.6 MB = ~10 GB of KV cache PER SEQUENCE
+
+  Batch of 16 sequences:
+    16 × 10 GB = 160 GB — more than the model weights (140 GB)!
+
+  This is why:
+    • vLLM uses PagedAttention (virtual memory for KV cache,
+      allocates in blocks instead of contiguous memory)
+    • Long contexts (128K tokens) need KV cache compression
+    • Quantizing KV cache (FP16 → INT8) cuts memory in half
+    • GQA (Grouped Query Attention) shares K,V across heads
+      → fewer K,V to store → smaller cache
+```
+
 ---
 
 ## 7. Transformer Variants & Modern Architectures

@@ -966,6 +966,8 @@ What happens (torch.compile):
     → MLIR (gpu dialect) → LLVM IR → PTX assembly
     → (NVIDIA ptxas) → SASS (GPU machine code)
 
+
+| Question | Key Points |
   The PTX for the fused kernel:
     ld.global.f32 %f1, [%rd1];      // load from HBM
     add.f32       %f2, %f1, 0f3F800000;  // add 1.0
@@ -976,8 +978,6 @@ What happens (torch.compile):
 ```
 
 ## Interview Quick Reference
-
-| Question | Key Points |
 |----------|-----------|
 | "How does a compiler work?" | Lexer → Parser → Semantic Analysis → IR Gen → Optimization → Codegen. Key IR is SSA form (each variable assigned once). |
 | "Why LLVM?" | Modular library design. M frontends × N backends = M+N work not M×N. Permissive license. Used by Rust, Swift, Julia, Clang, etc. |
