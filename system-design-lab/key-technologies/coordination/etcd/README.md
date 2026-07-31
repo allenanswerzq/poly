@@ -113,7 +113,14 @@ Client: PUT /mykey = "hello"
 │   Follower 3 → Leader: "OK, I have index 42"                       │
 │                                                                      │
 │ Step 6: Leader sees MAJORITY (2 of 3) have the entry               │
-│   Entry is now COMMITTED. Leader advances commit index to 42.       │
+│   Leader tracks matchIndex for each follower:                       │
+│     matchIndex[leader]    = 42                                      │
+│     matchIndex[follower2] = 42  (ACKed)                             │
+│     matchIndex[follower3] = 40  (hasn't ACKed yet, doesn't matter) │
+│   Sort: [40, 42, 42] → middle value = 42 → majority has it!       │
+│   Entry is now COMMITTED. Leader advances commitIndex to 42.       │
+│   commitIndex is NOT written to disk — it's derived from           │
+│   matchIndex and reconstructed after crash via election.            │
 │                                                                      │
 │ Step 7: Leader applies entry to MVCC store (bbolt B+ tree)         │
 │   mykey now has value "hello" at revision 42.                       │
@@ -170,6 +177,160 @@ a heartbeat for the ELECTION TIMEOUT (1000-2000ms), it starts an election.
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
+### 3.3 Crash Scenarios — What Happens When the Leader Dies Mid-Write
+
+```
+The key question: leader sent AppendEntries then crashed.
+Some followers got it, some didn't. What happens?
+
+There are 3 possible scenarios. ALL are safe because of Raft's rules.
+```
+
+```
+SCENARIO 1: Leader crashes BEFORE majority ACKs → entry NOT committed
+             → entry MAY or MAY NOT survive (and that's OK!)
+
+  Timeline:
+    Leader: append index=42, write WAL, send AppendEntries → CRASH!
+    Follower 2: received index=42, wrote to WAL
+    Follower 3: did NOT receive (network was slow)
+
+  State after crash:
+    Leader (dead): has index=42 in WAL
+    Follower 2:    has index=42 in WAL
+    Follower 3:    does NOT have index=42
+
+  Election happens. Two sub-cases:
+
+  Case 1a: Follower 2 wins election (has index=42)
+    New leader has index=42 in its log.
+    But it does NOT know if this entry was committed by the old leader.
+    It uses the NO-OP trick to commit it indirectly:
+
+    Step 1: New leader (F2, now term=6) appends a NO-OP entry
+      Log: [..., index=42 (term=5, old), index=43 (term=6, NO-OP)]
+
+    Step 2: Replicate both entries to Follower 3
+      F3 receives index=42 and index=43, writes to WAL, ACKs.
+
+    Step 3: Majority (F2 + F3) has index=43 (term=6)
+      → index=43 is COMMITTED.
+      → Committing index=43 also commits everything before it (index=42).
+      → Entry SURVIVES.
+
+    Why not just count replicas for index=42 directly?
+      Raft rule: a new leader NEVER commits old-term entries by counting.
+      Only commits entries from its OWN term (the NO-OP in term=6).
+      Old entries ride along — committed as a side effect.
+      This prevents a subtle safety bug (Raft paper, Figure 8).
+
+    Client can retry and will see the entry was applied.
+
+  Case 1b: Follower 3 wins election (does NOT have index=42)
+    New leader does NOT have index=42.
+    New leader sends its log to Follower 2.
+    Follower 2 truncates index=42 from its log (overwrites with leader's log).
+    → Entry is LOST.
+    → This is OK! Leader never told the client "committed."
+    → Client got no response (leader crashed) → client retries.
+    → Retry creates a NEW entry with a new index. Works fine.
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │ IMPORTANT: The client never got a success response.           │
+  │ From the client's perspective, the write might or might not   │
+  │ have happened → client MUST retry.                            │
+  │ This is why etcd operations should be IDEMPOTENT.             │
+  │ (PUT the same key=value again → same result.)                │
+  └──────────────────────────────────────────────────────────────┘
+```
+
+```
+SCENARIO 2: Leader crashes AFTER majority ACKs → entry IS committed
+             → entry ALWAYS survives (guaranteed!)
+
+  Timeline:
+    Leader: append index=42, send AppendEntries
+    Follower 2: ACK (has index=42 in WAL)
+    Follower 3: ACK (has index=42 in WAL)
+    Leader: sees majority → commitIndex=42 → CRASH before replying to client!
+
+  State after crash:
+    Leader (dead): has index=42 (committed)
+    Follower 2:    has index=42
+    Follower 3:    has index=42
+
+  Election happens:
+    WHOEVER wins (F2 or F3), they BOTH have index=42.
+    Raft's election rule: only a node with the most up-to-date log can win.
+    Both F2 and F3 have index=42 → either can win.
+    New leader has index=42 → it's committed → it WILL be applied.
+    → Entry SURVIVES. Guaranteed. Even though leader crashed.
+
+  But the client didn't get a response (leader crashed before step 8).
+  → Client retries. New leader has the entry. Client sees it exists.
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │ This is the CORE SAFETY GUARANTEE of Raft:                    │
+  │                                                               │
+  │ Once a majority has an entry in their logs,                  │
+  │ ANY future leader MUST also have that entry.                  │
+  │                                                               │
+  │ Why? Because to win an election, you need majority votes.    │
+  │ A voter only votes for candidates with logs at least as      │
+  │ up-to-date as theirs. Since a majority already has the entry,│
+  │ any majority of voters OVERLAPS with the majority that has   │
+  │ the entry → at least one voter will refuse a candidate       │
+  │ that's missing the entry → that candidate can't win.         │
+  │                                                               │
+  │  Majority who has entry:     {F2, F3}                        │
+  │  Majority needed for election: 2 of 3                        │
+  │  Any set of 2 includes at least one of {F2, F3}             │
+  │  → candidate without entry can't get 2 votes → can't win    │
+  └──────────────────────────────────────────────────────────────┘
+```
+
+```
+SCENARIO 3: Leader crashes AFTER replying to client → everything is fine
+
+  Timeline:
+    Leader: commit → apply to bbolt → reply "OK" to client → CRASH
+
+  Client got "OK" → the entry is committed and on a majority.
+  New election → new leader has the entry → continues normally.
+  No data loss. No inconsistency. Client doesn't even need to retry.
+```
+
+```
+Summary of crash scenarios:
+
+  ┌────────────────────────────┬──────────────────┬─────────────────────┐
+  │ Leader crashes...          │ Entry committed? │ What happens         │
+  ├────────────────────────────┼──────────────────┼─────────────────────┤
+  │ Before sending to          │ NO               │ Entry lost.          │
+  │ followers                  │                  │ Client got no reply, │
+  │                            │                  │ retries.             │
+  ├────────────────────────────┼──────────────────┼─────────────────────┤
+  │ After some followers got   │ MAYBE            │ Depends on who wins  │
+  │ it, but not majority       │                  │ election. Entry may  │
+  │                            │                  │ survive or be lost.  │
+  │                            │                  │ Client retries.      │
+  ├────────────────────────────┼──────────────────┼─────────────────────┤
+  │ After majority ACKed       │ YES              │ Entry guaranteed to  │
+  │ (committed)                │                  │ survive. New leader  │
+  │                            │                  │ will have it.        │
+  │                            │                  │ Client may retry     │
+  │                            │                  │ (no response) but    │
+  │                            │                  │ entry is safe.       │
+  ├────────────────────────────┼──────────────────┼─────────────────────┤
+  │ After replying to client   │ YES              │ Everything fine.     │
+  │                            │                  │ No action needed.    │
+  └────────────────────────────┴──────────────────┴─────────────────────┘
+
+  The rule: committed = on a majority of logs = PERMANENT.
+  Not committed = might be lost = client must retry.
+  Client never sees a false "OK" — if they got "OK", the entry is committed.
+```
+
 ---
 
 ## 4. MVCC — Multi-Version Concurrency Control
@@ -177,6 +338,87 @@ a heartbeat for the ELECTION TIMEOUT (1000-2000ms), it starts an election.
 MVCC in etcd is simpler than in a relational database (no concurrent
 transactions competing for the same rows), but the core idea is identical:
 **never overwrite data — create new versions, let readers pick which version to see.**
+
+### 4.0 Where the Revision Number Comes From
+
+```
+The revision is just a COUNTER on the leader. Not a timestamp.
+Not from an external service. Just: revision++.
+
+  Leader has: next_revision = 1
+
+  Client A: PUT /name = "alice"   → leader assigns revision 1, next_revision = 2
+  Client B: PUT /count = "10"     → leader assigns revision 2, next_revision = 3
+  Client A: PUT /name = "bob"     → leader assigns revision 3, next_revision = 4
+
+  The client does NOT choose or know the revision beforehand.
+  The leader assigns it unilaterally as part of the Raft log entry.
+  This works because ALL writes go through ONE leader → no conflicts.
+
+Write flow (client's perspective):
+
+  Client ──► etcd: "PUT /name = alice"      (no revision in request)
+                        │
+  etcd leader:          │
+    revision = current + 1 = 42
+    create log entry {index:42, data: PUT /name=alice}
+    replicate via Raft → commit → apply to bbolt
+                        │
+  etcd ──► Client: "OK, header: { revision: 42 }"
+                        ↑
+           Client learns the revision FROM THE RESPONSE.
+
+Read flow (client's perspective):
+
+  1. Default read (latest):
+     Client: GET /name
+     → Returns latest value + revision in response header.
+     → Client doesn't need to know any revision number.
+
+  2. Read at specific revision (time travel):
+     Client: GET /name --rev=35
+     → Returns value of /name as of revision 35.
+     → Client got "35" from a previous response.
+
+  3. Consistent multi-key read:
+     resp1 = GET /config/a        → header says revision=50
+     resp2 = GET /config/b --rev=50  → reads at SAME point in time
+     → Both reads see the same snapshot. Consistent.
+
+  4. Watch from a revision:
+     Client: WATCH /pods/ --start-rev=100
+     → "Give me all changes since revision 100"
+     → Client got "100" from a previous LIST response.
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │ Every etcd response includes the current cluster revision:    │
+  │                                                               │
+  │   PUT response:  { header: { revision: 42 } }               │
+  │   GET response:  { value: "alice", mod_revision: 42,         │
+  │                    header: { revision: 45 } }                 │
+  │   LIST response: { items: [...], header: { revision: 100 } } │
+  │                                                               │
+  │ No separate "revision service" needed.                       │
+  │ The leader IS the revision generator.                        │
+  │ Every response carries it.                                   │
+  └──────────────────────────────────────────────────────────────┘
+
+How this compares to other systems:
+  ┌────────────────────┬──────────────────────────────────────────┐
+  │ System             │ How it assigns versions                   │
+  ├────────────────────┼──────────────────────────────────────────┤
+  │ etcd               │ Leader counter (revision++). Simplest.   │
+  │ Spanner            │ TrueTime (GPS + atomic clocks). Real time│
+  │ CockroachDB        │ HLC (physical time + logical counter).   │
+  │ PostgreSQL         │ Transaction ID (xid), per-node counter.  │
+  │ Cassandra          │ Client-side wall-clock timestamp.        │
+  │ TiKV (PD)          │ Timestamp Oracle (central server).       │
+  └────────────────────┴──────────────────────────────────────────┘
+
+  etcd can use the simplest approach because it has ONE leader.
+  If you need multi-leader writes across regions, you need
+  real timestamps (HLC/TrueTime) since there's no single counter.
+```
 
 ```
 etcd doesn't overwrite values. Every write creates a NEW REVISION.
