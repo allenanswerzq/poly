@@ -150,6 +150,21 @@ Why columnar is faster for analytics:
   4. SIMD: process 4/8/16 values in a single CPU instruction
 ```
 
+┌──────────────────────┬──────────────────────┬──────────────────────┐
+│                      │ DuckDB native         │ Parquet               │
+├──────────────────────┼──────────────────────┼──────────────────────┤
+│ Layout               │ Columnar (row groups) │ Columnar (row groups) │
+│ Compression          │ Per-column (auto)     │ Per-column (configurable)│
+│ Mutable?             │ Yes (UPDATE, DELETE)  │ No (immutable file)   │
+│ Transactions         │ Yes (ACID, MVCC)      │ No                    │
+│ Indexes              │ Yes (ART, zone maps)  │ No (min/max stats only)│
+│ File = query-ready?  │ Yes (for DuckDB only) │ Yes (for any tool)    │
+│ Cross-tool compat    │ No (DuckDB-specific)  │ Yes (universal)       │
+│ Streaming writes     │ Yes (INSERT INTO)     │ No (write whole file) │
+│ Typical use          │ Persistent analytics DB│ Data interchange     │
+│                      │                       │ Data lake files        │
+└──────────────────────┴──────────────────────┴──────────────────────┘
+
 ### 2. Vectorized Execution — The Core Engine
 
 ```
@@ -164,7 +179,7 @@ Traditional (Volcano / tuple-at-a-time):
   10 million rows = 10 million iterations with function call overhead.
   CPU spends most time on overhead, not actual computation.
 
-Vectorized (DuckDB):
+Vectorized (DuckDB) push based, explicit pipeline graph:
 
   get 2048 values of "age" column    ← one array
   compare all 2048 with 25           ← SIMD: 8 comparisons per instruction
@@ -397,6 +412,7 @@ Need concurrent writes from many users?    → PostgreSQL / MySQL
 Need embedded analytics in your app?       → DuckDB
 ```
 
+
 ## Key Internals to Know
 
 | Component | Implementation | Why |
@@ -410,3 +426,294 @@ Need embedded analytics in your app?       → DuckDB
 | Indexes | ART (Adaptive Radix Tree) | Memory-efficient, fast point lookups |
 | Strings | FST + overflow pages | Short strings inline, long strings separate |
 | MVCC | HyPer-style (undo buffers) | Optimistic for read-heavy OLAP |
+
+## How UPDATE and DELETE Work in a Columnar Database
+
+```
+Columnar files (Parquet) are IMMUTABLE. You can't change a value in place
+because columns are compressed and packed together. So how does DuckDB
+support UPDATE and DELETE in its native .duckdb format?
+
+DuckDB uses a combination of:
+  1. Row groups (similar to Parquet row groups, but mutable metadata)
+  2. An UNDO LOG for MVCC
+  3. Mark-and-rewrite for committed changes
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  DuckDB Native Storage Layout:                                       │
+│                                                                       │
+│  Row Group 0 (e.g., 122,880 rows):                                  │
+│    ┌──────────────┐ ┌──────────────┐ ┌──────────────┐              │
+│    │ city column   │ │ sales column │ │ status column│              │
+│    │ (compressed)  │ │ (compressed) │ │ (compressed) │              │
+│    └──────────────┘ └──────────────┘ └──────────────┘              │
+│    + validity masks (which rows are "alive" vs deleted)             │
+│    + version pointers (for in-flight transactions)                  │
+│                                                                       │
+│  Row Group 1: ...                                                    │
+│  Row Group 2: ...                                                    │
+└──────────────────────────────────────────────────────────────────────┘
+
+
+DELETE — mark rows as deleted, don't physically remove:
+
+  DELETE FROM orders WHERE order_id = 42;
+
+  Step 1: Find which row group and row index contains order_id=42.
+          (Scan or use zone maps / ART index to locate.)
+
+  Step 2: Set a DELETION MARKER for that row.
+          DuckDB maintains a validity bitmask per row group:
+            row 0: alive
+            row 1: alive
+            row 2: DELETED  ← just flip this bit
+            row 3: alive
+
+          The compressed column data is NOT rewritten.
+          Only the bitmask changes (tiny metadata update).
+
+  Step 3: Future reads skip deleted rows using the bitmask.
+          Scans check: if bit is 0 → skip this row.
+
+  Step 4: Eventually, VACUUM/compaction rewrites the row group
+          WITHOUT the deleted rows → reclaims space.
+
+
+UPDATE — internally a DELETE + INSERT:
+
+  UPDATE orders SET status = 'shipped' WHERE order_id = 42;
+
+  Step 1: Mark the old row as DELETED (same as above).
+
+  Step 2: INSERT a new row with the updated values.
+          The new row goes into a WRITE-AHEAD structure
+          (in-memory buffer or new row group segment).
+
+  Step 3: Both the delete marker and the new row are part of
+          the SAME transaction. Either both are visible or neither.
+          MVCC (undo buffers) ensures this.
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Before UPDATE:                                               │
+  │                                                               │
+  │  Row Group 0 (compressed):                                   │
+  │    row 42: {order_id:42, status:"pending", city:"NYC"}       │
+  │                                                               │
+  │  After UPDATE (same row group, NOT rewritten):               │
+  │                                                               │
+  │  Row Group 0 (compressed, unchanged!):                       │
+  │    row 42: {order_id:42, status:"pending", city:"NYC"}       │
+  │            ↑ MARKED DELETED (validity bit = 0)               │
+  │                                                               │
+  │  New segment / update buffer:                                 │
+  │    new row: {order_id:42, status:"shipped", city:"NYC"}      │
+  │             ↑ this is the current version                    │
+  │                                                               │
+  │  Read path merges: skip deleted row 42, return new version.  │
+  └──────────────────────────────────────────────────────────────┘
+
+
+MVCC — how concurrent reads see consistent state:
+
+  DuckDB uses HyPer-style MVCC with UNDO BUFFERS:
+
+  Main storage always has the LATEST committed version.
+  If a transaction needs to see an OLDER version, DuckDB reconstructs
+  it from undo buffers (reverse the latest change).
+
+  Transaction T1 (started before the UPDATE):
+    Reads row 42 → checks undo buffer → sees OLD version: status="pending"
+
+  Transaction T2 (started after the UPDATE committed):
+    Reads row 42 → sees MAIN storage: status="shipped"
+
+  This is the OPPOSITE of PostgreSQL's MVCC:
+    PostgreSQL: main storage has OLD version, new version in heap.
+    DuckDB:     main storage has NEW version, old version in undo buffer.
+
+  Why? DuckDB is read-heavy/OLAP. Most readers want the LATEST data.
+  Keeping latest in main storage means most reads never touch the undo log.
+
+
+Why Parquet can't do this:
+
+  Parquet files are sealed after writing. There is no:
+    - Validity bitmask to mark deletions
+    - Undo buffer for MVCC
+    - In-place metadata update mechanism
+    - Transaction coordination between files
+
+  To "UPDATE" a Parquet file, you must:
+    1. Read the entire file
+    2. Modify the rows in memory
+    3. Write an entirely NEW Parquet file
+    4. Delete the old file
+
+  Or use Iceberg/Delta Lake which manage delete files + new data files
+  alongside the original Parquet (Merge-on-Read or Copy-on-Write).
+
+  DuckDB's native format avoids this by building mutability into the
+  row group metadata layer, while keeping column data compressed.
+
+
+Summary:
+
+  ┌──────────────────┬──────────────────────┬──────────────────────┐
+  │ Operation        │ DuckDB native         │ Parquet file          │
+  ├──────────────────┼──────────────────────┼──────────────────────┤
+  │ DELETE           │ Flip validity bit     │ Rewrite entire file  │
+  │                  │ (no data rewrite)     │ (or use Iceberg)     │
+  │ UPDATE           │ Mark deleted + insert │ Rewrite entire file  │
+  │                  │ new version           │ (or use Iceberg)     │
+  │ MVCC             │ Undo buffers (latest  │ N/A (no transactions)│
+  │                  │ in main storage)      │                      │
+  │ Space reclaim    │ Background compaction │ Write new file       │
+  │ Concurrency      │ Multiple readers +    │ N/A                  │
+  │                  │ single writer          │                      │
+  └──────────────────┴──────────────────────┴──────────────────────┘
+```
+
+## The .duckdb File Format — Single File, Everything Inside
+
+```
+DuckDB stores ALL data in ONE file (like SQLite). No separate directories,
+no loose SSTables, no WAL segments scattered on disk.
+
+  my_analytics.duckdb
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                                                                   │
+  │  HEADER (magic, version, flags)                                  │
+  │                                                                   │
+  │  METADATA BLOCKS:                                                │
+  │    - Table catalog (table names, schemas, column types)          │
+  │    - Index catalog (ART index metadata)                          │
+  │    - Block allocation map (which blocks are free/used)           │
+  │                                                                   │
+  │  DATA BLOCKS (row groups for each table):                        │
+  │    - Table "orders" row group 0:                                 │
+  │        [order_id column, compressed]                             │
+  │        [city column, compressed]                                 │
+  │        [amount column, compressed]                               │
+  │    - Table "orders" row group 1: ...                             │
+  │    - Table "users" row group 0: ...                              │
+  │                                                                   │
+  │  INDEX BLOCKS:                                                   │
+  │    - ART index data for orders.order_id                          │
+  │                                                                   │
+  │  FREE BLOCKS (recycled space from deletes/updates):              │
+  │    - Available for reuse by new writes                           │
+  │                                                                   │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Plus a temporary WAL file during operation:
+    my_analytics.duckdb.wal  (deleted after clean shutdown/checkpoint)
+```
+
+### Block Allocator — Managing Space Inside One File
+
+```
+The file is divided into fixed-size BLOCKS (typically 256 KB):
+
+  Block 0:  [header + metadata]
+  Block 1:  [table catalog]
+  Block 2:  [orders.order_id column, row group 0]
+  Block 3:  [orders.city column, row group 0]
+  Block 4:  [orders.amount column, row group 0]
+  Block 5:  [users.name column, row group 0]
+  Block 6:  [FREE — previously deleted data]
+  Block 7:  [orders.order_id column, row group 1]
+  Block 8:  [ART index block]
+  ...
+
+  INSERT new data → allocate from free blocks → write compressed columns.
+  DELETE data → mark blocks as free (reusable later).
+  CHECKPOINT → flush WAL into proper blocks, update metadata atomically.
+```
+
+### The WAL (Temporary Second File)
+
+```
+During operation, two files exist:
+
+  my_analytics.duckdb      ← main storage (row groups, metadata)
+  my_analytics.duckdb.wal  ← write-ahead log (uncommitted/recent changes)
+
+  WAL lifecycle:
+    INSERT/UPDATE/DELETE → appended to WAL first (fast sequential write).
+    CHECKPOINT → WAL changes merged into main file → WAL deleted.
+    Clean shutdown → automatic checkpoint → WAL disappears.
+    Crash with WAL → replay WAL on next open → consistent state restored.
+
+  After clean shutdown: truly a SINGLE file on disk.
+```
+
+### How Big Can It Get?
+
+```
+┌────────────────────────────┬────────────────────────────────────────┐
+│ Limit                      │ Value                                  │
+├────────────────────────────┼────────────────────────────────────────┤
+│ DuckDB internal limit      │ None (no built-in max)                 │
+│ ext4 filesystem            │ 16 TB max file size                    │
+│ XFS filesystem             │ 8 EB (effectively unlimited)           │
+│ NTFS (Windows)             │ 16 TB                                  │
+│ APFS (macOS)               │ 8 EB                                   │
+├────────────────────────────┼────────────────────────────────────────┤
+│ Practical sweet spot       │ 1 GB – 500 GB                          │
+│ "Works but getting big"    │ 500 GB – 2 TB                          │
+│ "Use something distributed"│ > 2 TB                                 │
+└────────────────────────────┴────────────────────────────────────────┘
+
+What limits you in practice (not the file format):
+  - CHECKPOINT time: larger file → more dirty blocks to flush.
+    1 TB DB → checkpoint could take 10+ seconds.
+  - VACUUM: rewrites entire file to reclaim deleted space.
+    500 GB → reads + writes 500 GB. Can take 30+ minutes.
+  - BACKUP: cp file /backup/ copies the whole thing.
+  - RAM: some operations (hash joins, sorts) work better with
+    RAM ≈ 10-25% of DB size. DuckDB spills to disk but slower.
+```
+
+### Why Single File Works for DuckDB
+
+```
+Advantages:
+  + Simple: one file to copy, backup, move, delete.
+  + Atomic: checkpoint updates metadata block → all-or-nothing.
+  + No loose files, no orphans, no directory management.
+  + Works on any filesystem.
+  + Easy embedding: open one file, no configuration.
+
+Disadvantages:
+  - Can't span multiple disks.
+  - Internal fragmentation (holes from deletes) → need VACUUM.
+  - Multi-process access needs file locking.
+  - Large files: backup/vacuum operates on full file size.
+
+For DuckDB's target (embedded analytics, single machine, GBs to low TBs),
+single file is perfect. Same design choice as SQLite.
+```
+
+### DuckDB Native vs Parquet — Storage Comparison
+
+```
+┌──────────────────────┬──────────────────────────┬──────────────────────────┐
+│                      │ DuckDB native (.duckdb)   │ Parquet (.parquet)        │
+├──────────────────────┼──────────────────────────┼──────────────────────────┤
+│ Files                │ 1 file (all tables)       │ 1 file per table/partition│
+│ Mutable              │ Yes (UPDATE, DELETE)      │ No (immutable)            │
+│ Transactions (ACID)  │ Yes                       │ No                        │
+│ Compression          │ FSST, ALP, bitpack, dict │ Dict, RLE, bitpack + Zstd│
+│ Compression ratio    │ ~6-8× vs raw CSV         │ ~8-10× vs raw (with Zstd)│
+│ Decode speed         │ Faster (no Zstd in path) │ Slower (Zstd decompress)  │
+│ Cross-tool compat    │ DuckDB only              │ Universal (any tool)      │
+│ Best for             │ Persistent local DB       │ Data interchange/lake     │
+│ Max practical size   │ ~500 GB – 2 TB           │ ~128 MB – 1 GB per file   │
+│                      │                           │ (unlimited total via many)│
+└──────────────────────┴──────────────────────────┴──────────────────────────┘
+
+Most DuckDB users never use the native format:
+  - Query Parquet files directly: SELECT * FROM '*.parquet'
+  - Results in memory or exported as Parquet
+  - Native .duckdb only when you need UPDATE/DELETE or persistence
+```

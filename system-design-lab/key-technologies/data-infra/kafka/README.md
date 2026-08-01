@@ -313,23 +313,23 @@ graph TB
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    Delivery Guarantees                                   │
 │                                                                          │
-│   Producer Semantics:                                                    │
+│   Producer Semantics(Write path):                                                    │
 │   ┌─────────────────────────────────────────────────────────────────┐   │
 │   │ acks=0  : Fire and forget (fastest, may lose data)             │   │
 │   │ acks=1  : Leader acknowledged (default, may lose on failover)  │   │
 │   │ acks=all: All replicas acknowledged (safest, slowest)          │   │
 │   └─────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
-│   Consumer Semantics:                                                    │
+│   Consumer Semantics(Read path):                                                    │
 │   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │ At-most-once:  Commit offset BEFORE processing                 │   │
+│   │ At-most-once(<=1):  Commit offset BEFORE processing                 │   │
 │   │                → May miss messages if crash during processing  │   │
 │   │                                                                 │   │
-│   │ At-least-once: Commit offset AFTER processing (default)        │   │
+│   │ At-least-once(>=1): Commit offset AFTER processing (default)        │   │
 │   │                → May process duplicates if crash after process │   │
 │   │                → Consumer must be IDEMPOTENT!                   │   │
 │   │                                                                 │   │
-│   │ Exactly-once:  Transactional processing                        │   │
+│   │ Exactly-once(==1):  Transactional processing                        │   │
 │   │                → Kafka transactions + idempotent producer      │   │
 │   │                → Most complex, some performance overhead       │   │
 │   └─────────────────────────────────────────────────────────────────┘   │

@@ -174,6 +174,82 @@ READ PATH (more complex):
   │                                   Return result         │
   └─────────────────────────────────────────────────────────┘
 
+  "Merge by timestamp" is PER PRIMARY KEY and PER CELL, not
+  "pick one whole SSTable." Suppose the schema is:
+
+    PRIMARY KEY ((conv_id), message_id)
+
+  and the same message exists in several storage components:
+
+    message_id = m42
+
+    SSTable 1 (oldest):
+      body   = "hello"        @ timestamp 100
+      author = "alice"        @ timestamp 100
+      status = "sent"         @ timestamp 100
+
+    SSTable 3 (newer flush):
+      body   = "hello, Bob"   @ timestamp 140  (message was edited)
+
+    Memtable (not flushed yet):
+      status = "read"         @ timestamp 160  (recipient read it)
+
+    SSTable 2:
+      Bloom filter says conv_id='abc' is definitely absent → skip it.
+
+  The replica reconciles all versions cell by cell:
+
+    ┌────────┬────────────────────────────────────┬──────────────────┐
+    │ Cell   │ Candidates                         │ Winner           │
+    ├────────┼────────────────────────────────────┼──────────────────┤
+    │ body   │ "hello"@100, "hello, Bob"@140    │ "hello, Bob"@140│
+    │ author │ "alice"@100                       │ "alice"@100     │
+    │ status │ "sent"@100, "read"@160           │ "read"@160      │
+    └────────┴────────────────────────────────────┴──────────────────┘
+
+  Returned logical row:
+    {message_id:m42, body:"hello, Bob", author:"alice", status:"read"}
+
+  Notice that the returned row is assembled from THREE places:
+    body   came from SSTable 3
+    author came from SSTable 1
+    status came from the Memtable
+
+  Different message IDs are not conflicts. Rows m43, m44, and so on are
+  unioned into the returned partition. Reconciliation is only needed when
+  multiple versions address the same (partition key, clustering key, cell).
+
+  CONCURRENT CONFLICT example (same cell):
+
+    Client A: body="payment accepted"  @ timestamp 200
+    Client B: body="payment cancelled" @ timestamp 205
+
+    Replicas may receive these writes in different orders and place them in
+    different memtables/SSTables. Arrival order does not decide the winner:
+
+      timestamp 205 > 200 → "payment cancelled" wins everywhere.
+
+    This is Last-Write-Wins (LWW). "Last" means highest write timestamp,
+    not the packet that happened to arrive last. A normal write timestamp is
+    supplied by the client or assigned by the coordinator (microsecond epoch
+    time). Clock skew can therefore make an older logical write win.
+
+  DELETE example:
+
+    SSTable 1: body="hello" @ timestamp 100
+    Memtable:  body=<tombstone> @ timestamp 180
+
+    Tombstone timestamp 180 wins over value timestamp 100, so body is absent.
+    The tombstone must remain until compaction can safely discard the old value;
+    otherwise "hello" could reappear (zombie data).
+
+  Important consequences:
+    - QUORUM determines how many replicas participate; LWW still resolves
+      conflicting cell versions after they are read.
+    - LWW can silently lose a valid concurrent update.
+    - For compare-and-set semantics, use a Lightweight Transaction (IF ...),
+      which runs Paxos and is much slower than a normal Cassandra write.
+
 COMPACTION (background maintenance):
   SSTables accumulate over time (each flush creates a new one).
   Compaction merges them: removes deleted data (tombstones),

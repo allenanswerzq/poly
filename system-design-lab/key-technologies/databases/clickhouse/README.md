@@ -151,6 +151,40 @@ Query: SELECT AVG(price)          │29.99 │ 9.99 │49.99 │19.99 │  ← p
 │  └──────────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────┘
 
+Query: SELECT city FROM events WHERE date = '2024-01-15' AND user_id > 5000
+
+Step 1: primary.idx (sparse index of KEY VALUES)
+  Binary search: find granules where (date, user_id) could match
+  → granules 10-15 might contain date='2024-01-15' AND user_id > 5000
+
+Step 2: date.mrk2 (marks for date column)
+  Look up granules 10-15:
+    granule 10 → compressed block at byte offset 120400, decompressed offset 0
+    granule 11 → compressed block at byte offset 120400, decompressed offset 32768
+    ...
+
+Step 3: Read + decompress those blocks from date.bin
+  Scan decompressed date values → which ROWS match date='2024-01-15'?
+  → rows 82000-82500 match
+
+Step 4: city.mrk2 (marks for city column)
+  Look up same granules for city column (different offsets!)
+    granule 10 → compressed block at byte offset 45200, decompressed offset 0
+
+Step 5: Read + decompress city.bin at those offsets
+  Return city values for matching rows.
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │  primary.idx: "which granules?"     (key values, one file)   │
+  │  .mrk2 files: "where on disk?"     (per-column offsets)     │
+  │  .bin files:  "the actual data"    (per-column, compressed) │
+  │                                                               │
+  │  primary.idx decides the granules.                           │
+  │  .mrk2 translates granule → physical position per column.   │
+  │  Each column has independent offsets because compression     │
+  │  produces different block sizes per column.                  │
+  └──────────────────────────────────────────────────────────────┘
+
 WRITE PATH:
   INSERT → data sorted by ORDER BY key → written as new PART
   → background merge combines parts (like LSM-tree compaction)

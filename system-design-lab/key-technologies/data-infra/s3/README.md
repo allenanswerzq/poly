@@ -63,6 +63,98 @@ S3 looks like a filesystem but it is NOT one. There are no directories.
   └──────────────────────────────────────────────────────────────┘
 ```
 
+### 2.1 Namespace vs. Ownership — Why Two AWS Customers Do Not Collide
+
+```
+An object's identity is:
+
+  (AWS partition, bucket name, object key [, version ID])
+
+For ordinary S3 general-purpose buckets, the bucket name is allocated to
+exactly one owner within an AWS partition (such as `aws`, `aws-cn`, or
+`aws-us-gov`). Object keys only need to be unique INSIDE that bucket.
+
+Example:
+
+  Alice creates bucket "alice-data":
+    CreateBucket("alice-data") → success; Alice owns the bucket.
+
+  Bob tries to create the same bucket name:
+    CreateBucket("alice-data") → BucketAlreadyExists
+
+  Bob then tries to write to Alice's existing bucket:
+    PUT s3://alice-data/report.csv, signed with Bob's credentials
+    → this names ALICE'S bucket, not a private Bob namespace
+    → S3 authenticates Bob, evaluates Alice's bucket policy + IAM
+    → 403 AccessDenied unless Alice explicitly granted Bob access
+
+  Bob creates his own differently named bucket:
+    s3://bob-data/report.csv
+
+  Alice and Bob can both use the key "report.csv" safely because:
+    (alice-data, report.csv) != (bob-data, report.csv)
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │ Bucket name selects the OWNER'S namespace.                   │
+  │ Object key selects an object WITHIN that namespace.          │
+  │ Caller identity does not silently create another namespace.  │
+  │ A request is authorized against the selected bucket.         │
+  └──────────────────────────────────────────────────────────────┘
+
+The caller does NOT need to discover everyone else's object keys. A key in
+another bucket cannot collide with theirs. Knowing or guessing another
+customer's bucket/key also grants no access; S3 authorizes every request.
+
+How can a finite 63-character bucket namespace be large enough?
+
+  Bucket names are identifiers, not English words. A general-purpose bucket
+  name can contain up to 63 lowercase letters, digits, hyphens, and periods.
+  Even using ONLY the 36 letters/digits gives roughly:
+
+    36^63 ≈ 10^98 possible 63-character names
+
+  One trillion is only 10^12. More importantly, S3 stores trillions of
+  OBJECTS, not trillions of BUCKETS. A single bucket can contain enormous
+  numbers of object keys, and each key may be up to 1,024 UTF-8 bytes.
+
+  Applications commonly append a UUID:
+    company-prod-data-a3f2b1c45d6e7f8091a2b3c4d5e6f789
+
+  A generated name is not assumed unique. CreateBucket performs an exact
+  uniqueness check:
+    name available → reserve it for this owner
+    name already reserved → BucketAlreadyExists; generate another and retry
+
+  Therefore a naming COLLISION ATTEMPT is possible, but two owners cannot
+  simultaneously hold the same shared-global bucket name. This is the same
+  distinction as a database PRIMARY KEY: callers may submit the same value,
+  but the uniqueness constraint prevents two stored rows with that key.
+
+  AWS also offers an account-regional bucket namespace whose generated suffix
+  includes the AWS account ID and Region. Those names are reserved to that
+  account and cannot later be recreated by another account.
+
+Hashes do not define identity:
+
+  Conceptually, S3 may hash or partition names for routing, but object identity
+  is the FULL exact (bucket name, object key) byte sequence. If an internal
+  hash maps two different names to the same partition, the index still compares
+  their complete strings, just as a normal hash table handles hash collisions.
+  AWS does not publish the exact current partition-routing algorithm.
+
+The same-key overwrite case exists only when two principals are BOTH allowed
+to write to the SAME bucket and choose the SAME key:
+
+  Service A (authorized) → PUT s3://shared-bucket/report.csv
+  Service B (authorized) → PUT s3://shared-bucket/report.csv
+
+S3 does not automatically add the principal ID to the key. Without bucket
+versioning, one write becomes the current object; with versioning, both writes
+are retained under different version IDs and one is current. Applications that
+share a bucket must therefore enforce prefixes, unique IDs, conditional writes,
+or a table/catalog commit protocol.
+```
+
 ---
 
 ## 3. Internal Architecture — How S3 Actually Works
@@ -98,8 +190,10 @@ S3 is built from three separate distributed systems:
   │  │    - Encryption key reference                             │ │
   │  │    - Version ID (if versioning enabled)                   │ │
   │  │                                                            │ │
-  │  │  This is a Dynamo-style partitioned store.                │ │
-  │  │  Partitioned by hash(bucket + key).                       │ │
+  │  │  This is a partitioned metadata store. AWS does not       │ │
+  │  │  publish the exact current routing/partition algorithm.   │ │
+  │  │  The full (bucket, key) bytes remain the object identity; │ │
+  │  │  a routing hash, if used, is not treated as unique.       │ │
   │  │  Replicated across multiple AZs.                          │ │
   │  │                                                            │ │
   │  │  This is the hardest part of S3 to build at scale.        │ │
@@ -633,5 +727,5 @@ Durability:                   99.999999999% (11 nines)
 Availability:                 99.99% (STANDARD), 99.5% (ONE_ZONE_IA)
 Max buckets per account:      100 (soft limit, can increase)
 Max object key length:        1,024 bytes
-Bucket names:                 globally unique across ALL AWS accounts
+Bucket names:                 unique within an AWS partition
 ```

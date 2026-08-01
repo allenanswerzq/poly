@@ -84,10 +84,9 @@ Download: GET https://cdn.example.com/video.mp4 (500 MB)
   │  Step 2: After all chunks written:                             │
   │    - Append to WAL: { file_id, status: COMPLETE,               │
   │                        total_chunks: 500, file_crc: <whole> }  │
-  │    - Flush WAL buffer → fsync WAL file (ONE fsync for entire   │
-  │      download's worth of checksums)                            │
   │                                                                │
-  │  Step 3: File is now in "PENDING_VERIFY" state                │
+  │  Step 3: Commit (mirroring for app/data/envocnfig, call fsync  |
+  |      first to ensure wal goes to disk)                         │
   │                                                                │
   └────────────────────────────────────────────────────────────────┘
 ```
