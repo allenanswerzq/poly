@@ -255,7 +255,166 @@ Each column is compressed independently using the best algorithm:
   than to read uncompressed data.
 ```
 
-### 5. Direct File Reading — Zero-Copy When Possible
+### 5. Data Ingestion — How Writes Work and Why They're Fast
+
+```
+DuckDB can ingest data at 1-10 GB/s depending on source format.
+Three main paths: bulk load, streaming inserts, and direct file queries.
+
+BULK LOAD (the primary ingestion path):
+
+  CREATE TABLE events AS SELECT * FROM 'events.parquet';
+  -- or:
+  COPY events FROM 'events.csv' (FORMAT CSV, HEADER);
+  -- or:
+  INSERT INTO events SELECT * FROM read_parquet('s3://lake/*.parquet');
+
+  What happens internally:
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │                                                               │
+  │  Source (Parquet/CSV) → Pipeline:                            │
+  │                                                               │
+  │  1. SCAN: read source in batches (morsel = ~10K rows)       │
+  │     For Parquet: decode column chunks → Arrow vectors         │
+  │     For CSV: parallel CSV parser (one thread per file chunk) │
+  │                                                               │
+  │  2. TRANSFORM (in pipeline): cast types, evaluate defaults   │
+  │                                                               │
+  │  3. COMPRESS: pick best encoding per column per row group    │
+  │     Dictionary? Bitpacking? RLE? FSST? Analyze the data.    │
+  │                                                               │
+  │  4. WRITE ROW GROUP: flush compressed columns to storage    │
+  │     Append to .duckdb file (allocate new blocks).           │
+  │                                                               │
+  │  All steps are PIPELINED and PARALLEL:                       │
+  │    Thread 1: scan batch 0 → compress → write                │
+  │    Thread 2: scan batch 1 → compress → write                │
+  │    Thread 3: scan batch 2 → compress → write                │
+  │    ...                                                        │
+  │                                                               │
+  │  Throughput: bounded by the SLOWEST step:                    │
+  │    Parquet source: ~2-5 GB/s (decode + decompress Zstd)     │
+  │    CSV source: ~500 MB-2 GB/s (parsing is expensive)        │
+  │    Compression: ~2-5 GB/s (lightweight encodings)            │
+  │    Disk write: ~1-3 GB/s (SSD sequential write)             │
+  │                                                               │
+  │  Net: ~1-3 GB/s for Parquet→DuckDB. ~500 MB/s for CSV.     │
+  └──────────────────────────────────────────────────────────────┘
+
+  Parquet → DuckDB is fastest because:
+    - Parquet is already COLUMNAR → no row-to-column conversion
+    - Statistics carry over (min/max → zone maps)
+    - Can read only needed columns (if CREATE TABLE AS SELECT subset)
+    - Parquet decompression parallelizes well
+
+  CSV → DuckDB is slower because:
+    - Text parsing (detect types, handle quoting, escape chars)
+    - Must sniff schema (scan first N rows to guess types)
+    - Row-to-column conversion (CSV is row-oriented text)
+    - BUT: DuckDB's parallel CSV reader splits file by byte offset
+      and assigns chunks to threads. Much faster than single-threaded.
+
+
+WHY IT'S FAST (vs PostgreSQL COPY):
+
+  PostgreSQL COPY FROM 'file.csv':
+    Parse CSV → build heap tuple → find page → write to table →
+    update indexes → write WAL → fsync.
+    Per-row overhead: tuple header, page management, WAL record.
+    Speed: ~100-500 MB/s (limited by WAL, indexes, row format)
+
+  DuckDB bulk load:
+    Parse CSV → accumulate in columnar vectors → when row group full:
+    compress per column → write one contiguous block → done.
+    No per-row overhead. No WAL during bulk load. No indexes to update.
+    Speed: ~500 MB-3 GB/s (limited by parsing or disk)
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Why DuckDB bulk load is 5-10× faster than PostgreSQL:       │
+  │                                                               │
+  │  1. No WAL: bulk load doesn't write a write-ahead log       │
+  │     (single-writer, can just write data directly).           │
+  │  2. No per-row overhead: no 23-byte tuple header per row.   │
+  │  3. No indexes: append compressed blocks, no B-tree updates.│
+  │  4. Batch compression: compress 122K rows at once (efficient)│
+  │     vs per-row processing.                                   │
+  │  5. Parallel: multiple threads scan + compress simultaneously│
+  │  6. Sequential writes: append blocks to end of file.         │
+  │     No random I/O, no page management.                      │
+  └──────────────────────────────────────────────────────────────┘
+
+
+STREAMING INSERTS (row-by-row or small batches):
+
+  INSERT INTO events VALUES (1, 'click', '2024-07-15', 42);
+  INSERT INTO events VALUES (2, 'view',  '2024-07-15', 10);
+  ...
+
+  This is SLOW compared to bulk load. Why:
+    - Each INSERT is a full transaction (WAL write + commit).
+    - Small batches don't fill a row group → poor compression.
+    - Single-writer: each commit blocks until fsync.
+    - Per-row overhead dominates (WAL record per small insert).
+
+  Speed: ~10K-100K rows/sec (vs millions for bulk load).
+
+  FIX: batch inserts into larger transactions:
+
+    BEGIN;
+    INSERT INTO events SELECT * FROM ...;  -- 100K rows at once
+    COMMIT;
+
+    Or use COPY for file-based ingestion. Or use appender API:
+
+    # Python appender API (fastest streaming insert):
+    appender = con.appender("events")
+    for row in rows:
+        appender.append_row(row)
+    appender.close()  # one commit for all rows
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Rule: NEVER insert row-by-row in a loop.                    │
+  │  Always batch (COPY, INSERT...SELECT, or appender API).     │
+  │  1 INSERT of 100K rows >> 100K INSERTs of 1 row.           │
+  └──────────────────────────────────────────────────────────────┘
+
+
+DIRECT QUERY (no ingestion at all):
+
+  SELECT * FROM 'data.parquet' WHERE date = '2024-07-15';
+
+  DuckDB doesn't copy the data into its own storage.
+  It reads Parquet (or CSV, JSON) directly during the query.
+  Zero ingestion time. Zero storage duplication.
+
+  Tradeoff: slower for REPEATED queries (no DuckDB indexes/compression).
+  For ad-hoc exploration: perfect.
+  For repeated dashboards: bulk load once, query many times.
+
+
+INGESTION SPEED COMPARISON:
+
+  ┌────────────────────────────┬──────────────────────────────────┐
+  │ Source → DuckDB             │ Approximate speed                │
+  ├────────────────────────────┼──────────────────────────────────┤
+  │ Parquet (local SSD)        │ 2-5 GB/s                         │
+  │ Parquet (S3)               │ limited by network (~1 Gbps)    │
+  │ CSV (local SSD)            │ 500 MB - 2 GB/s                  │
+  │ CSV (with type detection)  │ 200-500 MB/s                     │
+  │ JSON (newline-delimited)   │ 200-500 MB/s                     │
+  │ PostgreSQL (over network)  │ 50-200 MB/s (network + serialize)│
+  │ Row-by-row INSERT          │ 10K-100K rows/s (don't do this!) │
+  │ Appender API (batched)     │ 500K-2M rows/s                   │
+  └────────────────────────────┴──────────────────────────────────┘
+
+  For perspective: 1 GB CSV file:
+    DuckDB COPY: ~1-2 seconds
+    PostgreSQL COPY: ~5-10 seconds
+    pandas read_csv: ~10-30 seconds
+```
+
+### 6. Direct File Reading — Zero-Copy When Possible
 
 ```
 Traditional approach:
@@ -493,6 +652,38 @@ UPDATE — internally a DELETE + INSERT:
           the SAME transaction. Either both are visible or neither.
           MVCC (undo buffers) ensures this.
 
+  When does the new row reach permanent row-group storage?
+
+    COMMIT time:
+      The update is durable IMMEDIATELY — written to the WAL file.
+      If crash after commit → replay WAL on restart → update survives.
+      But: the row group on disk is NOT yet rewritten. The new row
+      lives in the WAL + in-memory buffer.
+
+    CHECKPOINT time (periodic or explicit):
+      DuckDB merges buffered changes into proper row groups on disk.
+      The update buffer's rows are compressed into new row groups.
+      The old row group is rewritten without the deleted row.
+      WAL entries for committed changes are discarded.
+      After checkpoint: everything is in columnar storage. Clean state.
+
+    Timeline:
+      COMMIT ───────────────────── CHECKPOINT ────────────────────►
+        │                              │
+        │ durable via WAL              │ merged into row group
+        │ new row in memory buffer     │ buffer flushed
+        │ reads merge buffer + disk    │ WAL truncated
+        │                              │ reads hit only row groups
+        │                              │
+      crash? → replay WAL           crash? → clean, nothing to replay
+
+    The memory buffer does NOT grow unbounded:
+      - CHECKPOINT fires automatically when WAL exceeds a size threshold
+        (or ~200K rows buffered, configurable via wal_autocheckpoint).
+      - Explicit: CHECKPOINT; or PRAGMA force_checkpoint;
+      - On clean shutdown: automatic checkpoint.
+      - Between checkpoints: buffer holds at most a few hundred MB.
+
   ┌──────────────────────────────────────────────────────────────┐
   │  Before UPDATE:                                               │
   │                                                               │
@@ -508,6 +699,11 @@ UPDATE — internally a DELETE + INSERT:
   │  New segment / update buffer:                                 │
   │    new row: {order_id:42, status:"shipped", city:"NYC"}      │
   │             ↑ this is the current version                    │
+  │                                                               │
+  │  After CHECKPOINT:                                           │
+  │  Row Group 0' (compressed, rewritten):                       │
+  │    row 42: {order_id:42, status:"shipped", city:"NYC"}       │
+  │            ↑ permanent. Buffer and WAL cleared.              │
   │                                                               │
   │  Read path merges: skip deleted row 42, return new version.  │
   └──────────────────────────────────────────────────────────────┘
@@ -716,4 +912,162 @@ Most DuckDB users never use the native format:
   - Query Parquet files directly: SELECT * FROM '*.parquet'
   - Results in memory or exported as Parquet
   - Native .duckdb only when you need UPDATE/DELETE or persistence
+```
+
+## Checkpoint — How WAL Becomes Permanent Storage
+
+```
+Checkpoint merges everything from the WAL + memory buffer into the
+main .duckdb file, making it self-contained again.
+
+BEFORE CHECKPOINT:
+
+  my_analytics.duckdb (main file):
+    Row Groups with old compressed data (some rows marked deleted).
+    Metadata points to these row groups.
+
+  my_analytics.duckdb.wal (WAL file):
+    [INSERT 1000 rows], [DELETE row 42], [UPDATE row 99], ...
+    Accumulated since last checkpoint.
+
+  Memory buffer:
+    New rows (not yet compressed into row groups).
+    Delete markers. Updated row versions.
+
+WHAT CHECKPOINT DOES:
+
+  Step 1: Write new/modified row groups to main file.
+    - Buffered INSERTs → compress columns → write as NEW row group.
+    - Row groups with deletions → rewrite WITHOUT deleted rows.
+    - Updated rows → new version placed in proper row group.
+    - All written as new blocks in the .duckdb file.
+
+  Step 2: Update metadata in main file (ATOMIC commit point).
+    - Table catalog: row counts, row group pointers.
+    - Block allocation: mark old blocks as free, new as used.
+    - This metadata write is the point of no return.
+
+  Step 3: fsync the main file.
+    - All new data + metadata flushed to stable storage.
+    - Main file is now self-contained and consistent.
+
+  Step 4: Delete/truncate the WAL file.
+    - No longer needed. Changes are in the main file.
+
+  Step 5: Clear memory buffers.
+    - Update buffer emptied. Undo log entries discarded.
+    - Memory usage drops.
+
+AFTER CHECKPOINT:
+
+  my_analytics.duckdb: complete, self-contained, all data present.
+  my_analytics.duckdb.wal: GONE (or empty).
+  Memory buffer: empty, fresh start.
+```
+
+### When Checkpoint Fires
+
+```
+AUTOMATIC:
+  wal_autocheckpoint = 16 MB (default, configurable).
+  When WAL exceeds this size → trigger checkpoint.
+
+  Small threshold (16 MB):
+    Checkpoints often. WAL stays small. Crash recovery fast.
+    Slightly more I/O overhead.
+
+  Large threshold (1 GB):
+    Checkpoints rarely. Batches more work.
+    Crash recovery replays more. Memory buffer larger.
+
+EXPLICIT:
+  CHECKPOINT;                -- manual trigger
+  PRAGMA force_checkpoint;   -- force even if WAL is small
+
+ON SHUTDOWN:
+  Automatic checkpoint on clean close.
+  After shutdown: only .duckdb exists. No WAL file.
+
+READ-ONLY (no writes at all):
+  Querying Parquet files directly → no WAL → no checkpoint needed.
+```
+
+### Crash Recovery (WAL Replay)
+
+```
+CRASH BEFORE CHECKPOINT:
+  .duckdb has old (consistent) data. .wal has recent changes.
+  On restart:
+    1. Open .duckdb (valid, just missing recent writes).
+    2. Detect .wal → replay all committed transactions from it.
+    3. Checkpoint → merge into main file → delete WAL.
+    4. Ready. All committed data preserved.
+
+CRASH DURING CHECKPOINT:
+  Main file metadata NOT yet updated (old row group pointers still valid).
+  Partially-written new blocks are orphaned (leaked space).
+  On restart:
+    1. Open .duckdb → metadata points to old row groups (safe).
+    2. .wal still exists → replay it.
+    3. Checkpoint again (properly this time).
+    4. Orphaned blocks reclaimed.
+
+CRASH AFTER CHECKPOINT:
+  .duckdb is complete. .wal was deleted.
+  On restart: open file, ready immediately. Nothing to replay.
+
+Safety guarantee:
+  .duckdb metadata ALWAYS points to valid, complete row groups.
+  Never points to partially-written data.
+  If .wal exists → replay it. If not → main file is authoritative.
+```
+
+### Checkpoint Cost
+
+```
+Checkpoint is not free, but is fast for typical DuckDB workloads:
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │ Work                    │ Cost                                │
+  ├─────────────────────────┼─────────────────────────────────────┤
+  │ Compress buffered rows  │ CPU (lightweight encodings, fast)   │
+  │ Write new row groups    │ Sequential I/O (SSD: ~1-3 GB/s)    │
+  │ Rewrite deleted rows    │ Read + recompress + write (heavier) │
+  │ fsync main file         │ ~1-10 ms per SSD flush             │
+  │ Delete WAL              │ Negligible                          │
+  └─────────────────────────┴─────────────────────────────────────┘
+
+  16 MB WAL threshold (default):
+    Checkpoint takes ~10-100 ms. Barely noticeable.
+
+  Large buffer (100K+ rows accumulated):
+    Checkpoint takes ~100 ms - 1 second.
+    Single writer is busy during this time (no concurrent writes).
+    Reads still work (MVCC — consistent snapshot).
+
+  This is why frequent small checkpoints are preferred:
+    Quick, minimal disruption, fast crash recovery.
+```
+
+### Checkpoint vs PostgreSQL
+
+```
+Same concept, different model:
+
+  PostgreSQL:
+    Dirty pages in shared_buffers → flush to data files.
+    WAL recycled up to checkpoint position.
+    WAL is a CONTINUOUS stream; checkpoint marks a position.
+    Happens every 5 min or at WAL size threshold.
+
+  DuckDB:
+    Memory buffer + WAL → merge into .duckdb row groups.
+    WAL DELETED entirely after checkpoint.
+    WAL is a TEMPORARY file; checkpoint eliminates it.
+    Happens every 16 MB or on shutdown.
+
+  Key difference:
+    PostgreSQL: WAL is permanent infrastructure (streaming replication uses it).
+    DuckDB: WAL is a scratch file (no replication, embedded use only).
+    DuckDB's model is simpler because it's single-writer + single-node.
 ```
