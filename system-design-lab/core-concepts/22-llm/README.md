@@ -682,6 +682,32 @@ The full attention weight matrix (with causal mask):
 
   The Q asks the question, K provides the match, V provides the answer.
   Q·K = "how much should I attend?" V = "what to take from that token."
+
+Example: what the output vectors look like (actual numbers)
+
+  Assume each Value vector has 3 dimensions:
+    v₀ = [1.00, 0.00, 0.00]
+    v₁ = [0.00, 2.00, 0.00]
+    v₂ = [0.00, 0.00, 3.00]
+    v₃ = [1.00, 1.00, 1.00]
+
+  Using the attention weights above:
+
+    output₀ = 1.00·v₀
+            = [1.00, 0.00, 0.00]
+
+    output₁ = 0.30·v₀ + 0.70·v₁
+            = [0.30, 1.40, 0.00]
+
+    output₂ = 0.05·v₀ + 0.40·v₁ + 0.55·v₂
+            = [0.05, 0.80, 1.65]
+
+    output₃ = 0.05·v₀ + 0.60·v₁ + 0.25·v₂ + 0.10·v₃
+            = [0.15, 1.30, 0.85]
+
+  So attention returns one output vector per token:
+    [output₀, output₁, output₂, output₃]
+  Shape: [sequence_length × value_dim] = [4 × 3] in this toy example.
 ```
 
 **Step 3.5: Why ALL Tokens Must Be Computed (Not Just the Last One)**
